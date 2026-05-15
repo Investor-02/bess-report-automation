@@ -1,0 +1,54 @@
+{
+  "name": "uze-report-automation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Windows app for automating UZE report calculations.",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:electron": "concurrently -k \"npm:dev\" \"npm:electron:watch\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "electron:watch": "tsc -p electron/tsconfig.json --watch --preserveWatchOutput",
+    "build": "tsc -b && vite build && tsc -p electron/tsconfig.json",
+    "preview": "vite preview --host 127.0.0.1",
+    "dist": "npm run build && electron-builder --win nsis portable"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.1.1",
+    "exceljs": "^4.4.0",
+    "lucide-react": "^0.561.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "wait-on": "^9.0.3"
+  },
+  "build": {
+    "appId": "com.uze.reportautomation",
+    "productName": "UZE Report Automation",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    }
+  }
+}
