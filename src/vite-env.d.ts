@@ -33,6 +33,20 @@ interface Window {
       costWithoutVat: number;
       vat: number;
       costWithVat: number;
+      periods?: Array<{
+        station: 'Олександрійська БЕСС' | 'Знаменська БЕСС';
+        firstDateHeader: string;
+        certifiedPowerMw: number;
+        trueHours: number;
+        falseHours: number;
+        serviceVolume: number;
+        fcrTariffEur: number;
+        eurRate: string;
+        monthlyPriceUah: number;
+        costWithoutVat: number;
+        vat: number;
+        costWithVat: number;
+      }>;
     }) => Promise<{
       outputPath: string;
       templateSource: string;
@@ -41,6 +55,18 @@ interface Window {
       totalRowNumber: number;
       totalFormulaRange: string;
       mode: 'updated' | 'filled-empty' | 'inserted-before-total';
+    } | null>;
+    exportTable1Ukrenergo: (input: unknown) => Promise<{
+      fileName: string;
+      outputPath: string;
+      templateSource: string;
+      exportPeriod: string;
+      updatedStationRows: Array<{
+        stationId: 'oleksandriya' | 'znamyanka';
+        sheetName: string;
+        period: string;
+        rowNumber: number;
+      }>;
     } | null>;
   };
 }

@@ -33,6 +33,20 @@ contextBridge.exposeInMainWorld('uzeApp', {
     costWithoutVat: number;
     vat: number;
     costWithVat: number;
+    periods?: Array<{
+      station: 'Олександрійська БЕСС' | 'Знаменська БЕСС';
+      firstDateHeader: string;
+      certifiedPowerMw: number;
+      trueHours: number;
+      falseHours: number;
+      serviceVolume: number;
+      fcrTariffEur: number;
+      eurRate: string;
+      monthlyPriceUah: number;
+      costWithoutVat: number;
+      vat: number;
+      costWithVat: number;
+    }>;
   }) =>
     ipcRenderer.invoke('table0:export-rpch', input) as Promise<{
       outputPath: string;
@@ -42,5 +56,18 @@ contextBridge.exposeInMainWorld('uzeApp', {
       totalRowNumber: number;
       totalFormulaRange: string;
       mode: 'updated' | 'filled-empty' | 'inserted-before-total';
+    } | null>,
+  exportTable1Ukrenergo: (input: unknown) =>
+    ipcRenderer.invoke('table1:export-ukrenergo', input) as Promise<{
+      fileName: string;
+      outputPath: string;
+      templateSource: string;
+      exportPeriod: string;
+      updatedStationRows: Array<{
+        stationId: 'oleksandriya' | 'znamyanka';
+        sheetName: string;
+        period: string;
+        rowNumber: number;
+      }>;
     } | null>,
 });
