@@ -6,6 +6,7 @@ export type ReportModuleName =
   | 'table0Fcr'
   | 'table1Payments'
   | 'rdnVdr'
+  | 'mms'
   | 'imbalances'
   | 'datahub'
   | 'acts'
@@ -90,12 +91,131 @@ export type Table1PaymentsModuleState = ReportModuleState<
   }
 >;
 
+export type RdnVdrMarketResult = {
+  market: 'РДН' | 'ВДР';
+  purchaseVolumeMwh: number;
+  purchaseAmountUah: number;
+  saleVolumeMwh: number;
+  saleAmountUah: number;
+  averagePurchasePriceUah: number;
+  averageSalePriceUah: number;
+  tradingResultUah: number;
+  rowsRead: number;
+};
+
+export type RdnVdrModuleState = ReportModuleState<
+  {
+    period?: ReportPeriod;
+    stationName?: string;
+  },
+  {
+    rdn: RdnVdrMarketResult;
+    vdr: RdnVdrMarketResult;
+  },
+  {
+    period: ReportPeriod;
+    stationId: StationId;
+    stationName: string;
+    markets: {
+      rdn: RdnVdrMarketResult;
+      vdr: RdnVdrMarketResult;
+    };
+    totalTradingResultUah: number;
+  }
+>;
+
+export type DataHubModuleState = ReportModuleState<
+  {
+    period?: ReportPeriod;
+    stationName?: string;
+  },
+  {
+    totalInKwh: number;
+    totalOutKwh: number;
+    hourlyRowsRead: number;
+  },
+  {
+    period: ReportPeriod;
+    stationId: StationId;
+    stationName: string;
+    totalInKwh: number;
+    totalOutKwh: number;
+    totalInMwh: number;
+    totalOutMwh: number;
+    saldoMwh: number;
+    hourlyRowsRead: number;
+  }
+>;
+
+export type MarketPriceHourlyRow = {
+  date: string;
+  hour: string;
+  rdnPriceUah: number;
+  positiveImbalancePriceUah: number;
+  negativeImbalancePriceUah: number;
+  actualImbalancePriceUah: number | null;
+};
+
+export type MarketPricesModuleState = ReportModuleState<
+  {
+    period?: ReportPeriod;
+  },
+  {
+    rows: MarketPriceHourlyRow[];
+    columns: {
+      date: string;
+      hour: string;
+      rdnPriceUah: string;
+      positiveImbalancePriceUah: string;
+      negativeImbalancePriceUah: string;
+      actualImbalancePriceUah: string | null;
+    };
+  },
+  {
+    period: ReportPeriod;
+    rowsCount: number;
+    firstDate: string;
+    lastDate: string;
+    averageRdnPriceUah: number;
+    averagePositiveImbalancePriceUah: number;
+    averageNegativeImbalancePriceUah: number;
+    averageActualImbalancePriceUah: number | null;
+    rows: MarketPriceHourlyRow[];
+  }
+>;
+
+export type MmsModuleState = ReportModuleState<
+  {
+    period?: ReportPeriod;
+    stationName?: string;
+  },
+  {
+    knessToStationKwh: number;
+    stationToKnessKwh: number;
+    rowsRead: number;
+    firstDate: string;
+    lastDate: string;
+  },
+  {
+    period: ReportPeriod;
+    stationId: StationId;
+    stationName: string;
+    knessToStationMwh: number;
+    stationToKnessMwh: number;
+    saldoMwh: number;
+    rowsRead: number;
+    firstDate: string;
+    lastDate: string;
+  }
+>;
+
 export type StationReportState = {
   table0Fcr: Table0FcrModuleState;
   table1Payments: Table1PaymentsModuleState;
-  rdnVdr: ReportModuleState;
+  rdnVdr: RdnVdrModuleState;
+  mms: MmsModuleState;
   imbalances: ReportModuleState;
-  datahub: ReportModuleState;
+  datahub: DataHubModuleState;
   acts: ReportModuleState;
   summary: ReportModuleState;
   lastUpdatedAt: string | null;
@@ -117,6 +237,7 @@ export type PeriodSummary = {
 export type PeriodReportState = {
   period: ReportPeriod;
   stations: Record<StationId, StationReportState>;
+  marketPrices: MarketPricesModuleState;
   summary: PeriodSummary | null;
   lastUpdatedAt: string | null;
 };
@@ -151,9 +272,10 @@ function createEmptyStationState(): StationReportState {
   return {
     table0Fcr: createEmptyModuleState() as Table0FcrModuleState,
     table1Payments: createEmptyModuleState() as Table1PaymentsModuleState,
-    rdnVdr: createEmptyModuleState(),
+    rdnVdr: createEmptyModuleState() as RdnVdrModuleState,
+    mms: createEmptyModuleState() as MmsModuleState,
     imbalances: createEmptyModuleState(),
-    datahub: createEmptyModuleState(),
+    datahub: createEmptyModuleState() as DataHubModuleState,
     acts: createEmptyModuleState(),
     summary: createEmptyModuleState(),
     lastUpdatedAt: null,
@@ -167,8 +289,32 @@ function createEmptyPeriodState(period: ReportPeriod): PeriodReportState {
       oleksandriya: createEmptyStationState(),
       znamyanka: createEmptyStationState(),
     },
+    marketPrices: createEmptyModuleState() as MarketPricesModuleState,
     summary: null,
     lastUpdatedAt: null,
+  };
+}
+
+function normalizeModuleState<T extends ReportModuleState>(moduleState: T | undefined) {
+  return {
+    ...createEmptyModuleState(),
+    ...(moduleState ?? {}),
+  } as T;
+}
+
+function normalizeStationState(stationState: Partial<StationReportState> | undefined): StationReportState {
+  const emptyStationState = createEmptyStationState();
+
+  return {
+    table0Fcr: normalizeModuleState(stationState?.table0Fcr ?? emptyStationState.table0Fcr),
+    table1Payments: normalizeModuleState(stationState?.table1Payments ?? emptyStationState.table1Payments),
+    rdnVdr: normalizeModuleState(stationState?.rdnVdr ?? emptyStationState.rdnVdr),
+    mms: normalizeModuleState(stationState?.mms ?? emptyStationState.mms),
+    imbalances: normalizeModuleState(stationState?.imbalances ?? emptyStationState.imbalances),
+    datahub: normalizeModuleState(stationState?.datahub ?? emptyStationState.datahub),
+    acts: normalizeModuleState(stationState?.acts ?? emptyStationState.acts),
+    summary: normalizeModuleState(stationState?.summary ?? emptyStationState.summary),
+    lastUpdatedAt: stationState?.lastUpdatedAt ?? null,
   };
 }
 
@@ -188,8 +334,10 @@ function ensurePeriod(state: ProjectReportState, period: ReportPeriod) {
   }
 
   for (const stationId of stationIds) {
-    state.periods[period].stations[stationId] ??= createEmptyStationState();
+    state.periods[period].stations[stationId] = normalizeStationState(state.periods[period].stations[stationId]);
   }
+
+  state.periods[period].marketPrices ??= createEmptyModuleState() as MarketPricesModuleState;
 
   return state.periods[period];
 }
@@ -228,6 +376,9 @@ export function loadReportState(): ProjectReportState | null {
       return null;
     }
 
+    for (const period of Object.keys(parsedState.periods) as ReportPeriod[]) {
+      ensurePeriod(parsedState, period);
+    }
     ensurePeriod(parsedState, parsedState.activePeriod);
 
     return parsedState;
@@ -259,7 +410,8 @@ export function updateStationModule<T extends ReportModuleName>(
   const normalizedPeriod = normalizePeriod(period);
   const state = loadReportState() ?? createEmptyReportState(normalizedPeriod);
   const periodState = ensurePeriod(state, normalizedPeriod);
-  const stationState = periodState.stations[stationId];
+  const stationState = normalizeStationState(periodState.stations[stationId]);
+  periodState.stations[stationId] = stationState;
   const updatedAt = nowIso();
 
   stationState[moduleName] = {
@@ -291,6 +443,26 @@ export function getStationModule<T extends ReportModuleName>(
   return state.periods[normalizedPeriod].stations[stationId]?.[moduleName] ?? null;
 }
 
+export function updatePeriodMarketPrices(period: string, data: Partial<MarketPricesModuleState>) {
+  const normalizedPeriod = normalizePeriod(period);
+  const state = loadReportState() ?? createEmptyReportState(normalizedPeriod);
+  const periodState = ensurePeriod(state, normalizedPeriod);
+  const updatedAt = nowIso();
+
+  periodState.marketPrices = {
+    ...periodState.marketPrices,
+    ...data,
+    lastUpdatedAt: updatedAt,
+  };
+  periodState.lastUpdatedAt = updatedAt;
+  state.activePeriod = normalizedPeriod;
+
+  const recalculatedState = recalculateSummary(normalizedPeriod, state);
+  saveReportState(recalculatedState);
+
+  return recalculatedState.periods[normalizedPeriod].marketPrices;
+}
+
 export function recalculateSummary(period: string, sourceState?: ProjectReportState) {
   const normalizedPeriod = normalizePeriod(period);
   const state = sourceState ?? loadReportState() ?? createEmptyReportState(normalizedPeriod);
@@ -307,7 +479,7 @@ export function recalculateSummary(period: string, sourceState?: ProjectReportSt
   };
 
   for (const stationId of stationIds) {
-    const result = periodState.stations[stationId].table0Fcr.result;
+    const result = periodState.stations[stationId]?.table0Fcr?.result;
     if (!result) {
       continue;
     }
