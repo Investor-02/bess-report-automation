@@ -937,8 +937,49 @@ input:focus {
   min-width: 880px;
 }
 
+.mms-directions-table {
+  min-width: 1080px;
+}
+
+.mms-kness-columns-table {
+  min-width: 1380px;
+}
+
+.balancing-energy-table {
+  min-width: 1480px;
+}
+
 .table2-imbalances-table {
   min-width: 1320px;
+}
+
+.table2-diagnostics-block {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.diagnostic-toggle {
+  width: fit-content;
+}
+
+.imbalances-tabs {
+  margin-bottom: 16px;
+}
+
+.final-readiness-heading {
+  margin-top: 18px;
+}
+
+.final-readiness-heading h4 {
+  margin: 0;
+  color: var(--ink);
+}
+
+.compact-heading {
+  margin-bottom: 0;
 }
 
 .hourly-imbalances-table {
@@ -972,6 +1013,106 @@ input:focus {
 
 .hourly-detail-toolbar select {
   height: 40px;
+}
+
+.final-report-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.final-report-toolbar label,
+.final-report-toolbar > div {
+  display: grid;
+  gap: 5px;
+  min-width: 190px;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.final-report-toolbar input {
+  height: 40px;
+}
+
+.final-report-toolbar strong {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.final-readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.final-readiness-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.final-readiness-card > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.final-readiness-card span {
+  padding: 5px 8px;
+  color: #475467;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.final-report-station {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.final-report-station h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 17px;
+}
+
+.final-report-table {
+  min-width: 940px;
+}
+
+.final-report-table td:first-child {
+  min-width: 360px;
+  white-space: normal;
+}
+
+.final-report-table small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.final-report-total-row {
+  background: #f8fafc;
+  font-weight: 800;
 }
 
 .table2-results-table th,
@@ -1325,11 +1466,24 @@ input:focus {
 }
 
 .payment-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   color: #475467;
   background: #f8fafc;
   font-size: 12px;
   font-weight: 800;
   line-height: 1.35;
+}
+
+.payment-table th:not(:first-child),
+.payment-table td:not(:first-child) {
+  text-align: right;
+}
+
+.payment-table th:first-child,
+.payment-table td:first-child {
+  text-align: left;
 }
 
 .payment-table td {

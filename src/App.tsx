@@ -19,7 +19,9 @@ import {
 import { calculateFcrMonitoringFromFile, type FcrMonitoringResult } from './fcrMonitoring';
 import { exportTable0RpchInBrowser, type BrowserTable0ExportRecord } from './table0BrowserExport';
 import { exportTable1InBrowser, type Table1BrowserExportResult } from './table1BrowserExport';
+import { buildBalancingEnergyDraft, parseBalancingEnergyFile, type BalancingEnergyDraftResult } from './table2BalancingEnergy';
 import { buildDataHubDraft, parseDataHubFile, type DataHubDraftResult } from './table2DataHub';
+import { buildTable2FinalReportData, exportTable2FinalReportInBrowser, type FinalReportExportResult } from './table2FinalReport';
 import { parseMarketPricesFile, type MarketPricesDraftResult } from './table2MarketPrices';
 import { buildMmsDraft, parseMmsFile, type MmsDraftResult } from './table2Mms';
 import {
@@ -74,6 +76,7 @@ type PersistedAppState = {
   table2DataHubDraft?: DataHubDraftResult | null;
   table2MarketPricesDraft?: MarketPricesDraftResult | null;
   table2MmsDraft?: MmsDraftResult | null;
+  table2BalancingEnergyDraft?: BalancingEnergyDraftResult | null;
   table2ImbalancesDraft?: ImbalancesDraftResult | null;
 };
 
@@ -90,11 +93,13 @@ type ExportStatus = {
 
 type Table1ExportStatus = Table1BrowserExportResult & { outputPath?: string };
 
-type AppModule = 'fcr' | 'rdnVdr' | 'datahub' | 'imbalances' | 'finalReport';
+type AppModule = 'fcr' | 'rdnVdr' | 'datahub' | 'imbalances' | 'finalReport' | 'projectState' | 'service';
 type FcrSubTab = 'table0' | 'table1';
+type ImbalancesSubTab = 'prices' | 'balancingEnergy' | 'mms' | 'calculation' | 'hourly';
 type Table2FileKey = 'oleksandriya-rdn' | 'oleksandriya-vdr' | 'znamyanka-rdn' | 'znamyanka-vdr';
 type DataHubFileKey = 'oleksandriya-datahub' | 'znamyanka-datahub';
 type MmsFileKey = 'oleksandriya-mms' | 'znamyanka-mms';
+type BalancingEnergyFileKey = 'oleksandriya-balancing-energy' | 'znamyanka-balancing-energy';
 
 const stationConfig: Record<Station, StationConfig> = {
   'Олександрійська БЕСС': {
@@ -130,12 +135,19 @@ const mmsFileSlots: Array<{ key: MmsFileKey; stationId: StationId; stationName: 
   { key: 'znamyanka-mms', stationId: 'znamyanka', stationName: stationLabels.znamyanka, label: 'MMS Знаменка' },
 ];
 
+const balancingEnergyFileSlots: Array<{ key: BalancingEnergyFileKey; stationId: StationId; stationName: Station; label: string }> = [
+  { key: 'oleksandriya-balancing-energy', stationId: 'oleksandriya', stationName: stationLabels.oleksandriya, label: 'Балансирующая энергия Олександрія' },
+  { key: 'znamyanka-balancing-energy', stationId: 'znamyanka', stationName: stationLabels.znamyanka, label: 'Балансирующая энергия Знаменка' },
+];
+
 const modules: Array<{ id: AppModule; title: string; description: string; status: string; icon: typeof Gauge; enabled: boolean }> = [
-  { id: 'fcr', title: 'FCR / RPC', description: 'Таблица_0 и Таблица_1', status: 'Активно', icon: Gauge, enabled: true },
-  { id: 'rdnVdr', title: 'RDN / VDR', description: 'Покупка и продажа', status: 'Активно', icon: LineChart, enabled: true },
+  { id: 'fcr', title: 'РПЧ / FCR', description: 'Таблица_0 и Таблица_1', status: 'Активно', icon: Gauge, enabled: true },
+  { id: 'rdnVdr', title: 'РДН / ВДР', description: 'Покупка и продажа', status: 'Активно', icon: LineChart, enabled: true },
   { id: 'datahub', title: 'DataHub', description: 'Фактическая энергия', status: 'Активно', icon: Database, enabled: true },
-  { id: 'imbalances', title: 'Imbalances', description: 'Цены и MMS / KNESS', status: 'Активно', icon: Zap, enabled: true },
-  { id: 'finalReport', title: 'Final Report', description: 'Итоговая Таблица_2', status: 'Скоро', icon: FileText, enabled: true },
+  { id: 'imbalances', title: 'Небалансы', description: 'Цены, MMS, расчеты', status: 'Активно', icon: Zap, enabled: true },
+  { id: 'finalReport', title: 'Итоговый отчет', description: 'Таблица_2', status: 'Активно', icon: FileText, enabled: true },
+  { id: 'projectState', title: 'Состояние проекта', description: 'Проверка данных', status: 'Готово', icon: Database, enabled: true },
+  { id: 'service', title: 'Сервис', description: 'Очистка и сброс', status: 'Готово', icon: Settings, enabled: true },
 ];
 
 const moneyFormatter = new Intl.NumberFormat('ru-RU', {
@@ -200,6 +212,14 @@ function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+function formatOptionalNumber(value: number | null | undefined, suffix = '') {
+  return value === null || value === undefined ? '—' : `${numberFormatter.format(value)}${suffix}`;
+}
+
+function formatOptionalMoney(value: number | null | undefined) {
+  return value === null || value === undefined ? '—' : `${moneyFormatter.format(value)} грн`;
+}
+
 function getStationFileMismatchWarning(stationName: Station, uploadedFileName: string) {
   const normalizedFileName = uploadedFileName.toUpperCase();
   if (!normalizedFileName) {
@@ -258,6 +278,7 @@ function readPersistedState(): PersistedAppState | null {
     table2DataHubDraft: parsedValue.table2DataHubDraft ?? null,
     table2MarketPricesDraft: parsedValue.table2MarketPricesDraft ?? null,
     table2MmsDraft: parsedValue.table2MmsDraft ?? null,
+    table2BalancingEnergyDraft: parsedValue.table2BalancingEnergyDraft ?? null,
     table2ImbalancesDraft: parsedValue.table2ImbalancesDraft ?? null,
   };
 }
@@ -289,8 +310,12 @@ export function App() {
   const [isTable1Exporting, setIsTable1Exporting] = useState(false);
   const [activeModule, setActiveModule] = useState<AppModule>('fcr');
   const [activeFcrSubTab, setActiveFcrSubTab] = useState<FcrSubTab>('table0');
+  const [activeImbalancesSubTab, setActiveImbalancesSubTab] = useState<ImbalancesSubTab>('prices');
   const [showProjectMemoryDetails, setShowProjectMemoryDetails] = useState(false);
   const [showFcrDebugDetails, setShowFcrDebugDetails] = useState(false);
+  const [showMmsKnessDiagnostics, setShowMmsKnessDiagnostics] = useState(false);
+  const [showMmsDirectionDiagnostics, setShowMmsDirectionDiagnostics] = useState(false);
+  const [showFinalReportWarnings, setShowFinalReportWarnings] = useState(false);
   const [cleanupPeriod, setCleanupPeriod] = useState<ReportPeriod>((loadReportState()?.activePeriod ?? '2026-04') as ReportPeriod);
   const [cleanupMessage, setCleanupMessage] = useState('');
   const [showResetReportConfirm, setShowResetReportConfirm] = useState(false);
@@ -314,6 +339,11 @@ export function App() {
   const [mmsMessage, setMmsMessage] = useState('');
   const [mmsError, setMmsError] = useState('');
   const [isMmsCalculating, setIsMmsCalculating] = useState(false);
+  const [balancingEnergyFiles, setBalancingEnergyFiles] = useState<Partial<Record<BalancingEnergyFileKey, File>>>({});
+  const [balancingEnergyDraft, setBalancingEnergyDraft] = useState<BalancingEnergyDraftResult | null>(persistedState?.table2BalancingEnergyDraft ?? null);
+  const [balancingEnergyMessage, setBalancingEnergyMessage] = useState('');
+  const [balancingEnergyError, setBalancingEnergyError] = useState('');
+  const [isBalancingEnergyCalculating, setIsBalancingEnergyCalculating] = useState(false);
   const [imbalancesPeriod, setImbalancesPeriod] = useState<ReportPeriod>((loadReportState()?.activePeriod ?? '2026-04') as ReportPeriod);
   const [imbalancesDraft, setImbalancesDraft] = useState<ImbalancesDraftResult | null>(persistedState?.table2ImbalancesDraft ?? null);
   const [imbalancesMessage, setImbalancesMessage] = useState('');
@@ -324,6 +354,10 @@ export function App() {
   const [hourlyImbalanceMessage, setHourlyImbalanceMessage] = useState('');
   const [hourlyImbalanceError, setHourlyImbalanceError] = useState('');
   const [isHourlyImbalanceExporting, setIsHourlyImbalanceExporting] = useState(false);
+  const [finalReportPeriod, setFinalReportPeriod] = useState<ReportPeriod>((loadReportState()?.activePeriod ?? '2026-04') as ReportPeriod);
+  const [finalReportExportStatus, setFinalReportExportStatus] = useState<FinalReportExportResult | null>(null);
+  const [finalReportExportError, setFinalReportExportError] = useState('');
+  const [isFinalReportExporting, setIsFinalReportExporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const normalizedRate = parseRate(eurRate);
@@ -476,6 +510,36 @@ export function App() {
     }),
   );
   const mmsRows = mmsDraft ? stationMemoryOrder.flatMap((stationId) => mmsDraft.stations?.[stationId] ?? []) : [];
+  const mmsDirectionRows = mmsRows.flatMap((stationRow) => (
+    stationRow.directionDiagnostics ?? []
+  ).map((direction) => ({
+    stationId: stationRow.stationId,
+    stationName: stationRow.stationName,
+    ...direction,
+  })));
+  const mmsKnessColumnRows = mmsRows.flatMap((stationRow) => (
+    stationRow.knessColumnDiagnostics ?? []
+  ).map((column) => ({
+    stationId: stationRow.stationId,
+    stationName: stationRow.stationName,
+    sourceFileName: stationRow.fileName,
+    period: stationRow.period,
+    rowsRead: stationRow.rowsRead,
+    ...column,
+  })));
+  const canCalculateBalancingEnergy = balancingEnergyFileSlots.some((slot) => Boolean(balancingEnergyFiles[slot.key])) && !isBalancingEnergyCalculating;
+  const balancingEnergyRows = balancingEnergyDraft
+    ? stationMemoryOrder.flatMap((stationId) => balancingEnergyDraft.stations?.[stationId] ?? [])
+    : [];
+  const isBalancingEnergyDraftSavedToProject = Boolean(
+    balancingEnergyDraft && balancingEnergyRows.length > 0 && balancingEnergyRows.every((stationDraft) => {
+      const saved = projectMemoryState?.periods[stationDraft.period]?.stations?.[stationDraft.stationId]?.balancingEnergy?.result;
+      return saved
+        && saved.purchase.volumeMwh === stationDraft.purchase.volumeMwh
+        && saved.sale.volumeMwh === stationDraft.sale.volumeMwh
+        && saved.sourceFileName === stationDraft.sourceFileName;
+    }),
+  );
   const isImbalancesDraftSavedToProject = Boolean(
     imbalancesDraft && stationMemoryOrder
       .filter((stationId) => Boolean(imbalancesDraft.stations?.[stationId]))
@@ -490,6 +554,10 @@ export function App() {
       }),
   );
   const imbalanceRows = imbalancesDraft ? stationMemoryOrder.flatMap((stationId) => imbalancesDraft.stations?.[stationId] ?? []) : [];
+  const finalReportData = useMemo(
+    () => buildTable2FinalReportData(projectMemoryState, finalReportPeriod),
+    [finalReportPeriod, projectMemoryState],
+  );
   const activeModuleMeta = modules.find((module) => module.id === activeModule) ?? modules[0];
   const ActiveModuleIcon = activeModuleMeta.icon;
 
@@ -497,7 +565,7 @@ export function App() {
     const isEmptyDefaultState =
       station === 'Олександрійська БЕСС' && eurRate === '' && fileName === '' && !result && !paymentCalculation && !table2Draft;
 
-    if (isEmptyDefaultState && !dataHubDraft && !marketPricesDraft && !mmsDraft && !imbalancesDraft) {
+    if (isEmptyDefaultState && !dataHubDraft && !marketPricesDraft && !mmsDraft && !balancingEnergyDraft && !imbalancesDraft) {
       clearDraftState();
       return;
     }
@@ -512,11 +580,12 @@ export function App() {
       table2DataHubDraft: dataHubDraft,
       table2MarketPricesDraft: marketPricesDraft,
       table2MmsDraft: mmsDraft,
+      table2BalancingEnergyDraft: balancingEnergyDraft,
       table2ImbalancesDraft: imbalancesDraft,
     };
 
     saveDraftState(stateToPersist);
-  }, [dataHubDraft, eurRate, fileName, imbalancesDraft, marketPricesDraft, mmsDraft, paymentCalculation, result, station, table2Draft]);
+  }, [balancingEnergyDraft, dataHubDraft, eurRate, fileName, imbalancesDraft, marketPricesDraft, mmsDraft, paymentCalculation, result, station, table2Draft]);
 
   const monthWarning =
     result && hasIncompleteFcrPeriod
@@ -586,6 +655,10 @@ export function App() {
     setMmsDraft(null);
     setMmsMessage('');
     setMmsError('');
+    setBalancingEnergyFiles({});
+    setBalancingEnergyDraft(null);
+    setBalancingEnergyMessage('');
+    setBalancingEnergyError('');
     setImbalancesDraft(null);
     setImbalancesMessage('');
     setImbalancesError('');
@@ -614,6 +687,7 @@ export function App() {
     setTable1Period(nextActivePeriod);
     setPaymentForPeriod(nextActivePeriod);
     setImbalancesPeriod(nextActivePeriod);
+    setFinalReportPeriod(nextActivePeriod);
     setShowResetReportConfirm(false);
     setCleanupMessage(`Месячный отчет за период ${removedPeriod} очищен.`);
   }
@@ -1127,6 +1201,14 @@ export function App() {
         parsedData: {
           knessToStationKwh: stationDraft.knessToStationKwh,
           stationToKnessKwh: stationDraft.stationToKnessKwh,
+          operatorToStationMwh: stationDraft.operatorToStationMwh,
+          stationToOperatorMwh: stationDraft.stationToOperatorMwh,
+          naToStationMwh: stationDraft.naToStationMwh,
+          stationToNaMwh: stationDraft.stationToNaMwh,
+          otherBalancingToStationMwh: stationDraft.otherBalancingToStationMwh,
+          stationToOtherBalancingMwh: stationDraft.stationToOtherBalancingMwh,
+          directionDiagnostics: stationDraft.directionDiagnostics,
+          knessColumnDiagnostics: stationDraft.knessColumnDiagnostics,
           rowsRead: stationDraft.rowsRead,
           firstDate: stationDraft.firstDate,
           lastDate: stationDraft.lastDate,
@@ -1137,6 +1219,14 @@ export function App() {
           stationName: stationDraft.stationName,
           knessToStationMwh: stationDraft.knessToStationMwh,
           stationToKnessMwh: stationDraft.stationToKnessMwh,
+          operatorToStationMwh: stationDraft.operatorToStationMwh,
+          stationToOperatorMwh: stationDraft.stationToOperatorMwh,
+          naToStationMwh: stationDraft.naToStationMwh,
+          stationToNaMwh: stationDraft.stationToNaMwh,
+          otherBalancingToStationMwh: stationDraft.otherBalancingToStationMwh,
+          stationToOtherBalancingMwh: stationDraft.stationToOtherBalancingMwh,
+          directionDiagnostics: stationDraft.directionDiagnostics,
+          knessColumnDiagnostics: stationDraft.knessColumnDiagnostics,
           saldoMwh: stationDraft.saldoMwh,
           rowsRead: stationDraft.rowsRead,
           firstDate: stationDraft.firstDate,
@@ -1155,6 +1245,95 @@ export function App() {
     setMmsMessage('MMS сохранен в месячный отчет.');
   }
 
+  function handleBalancingEnergyFileChange(key: BalancingEnergyFileKey, file: File | undefined) {
+    setBalancingEnergyFiles((currentFiles) => ({
+      ...currentFiles,
+      [key]: file,
+    }));
+    setBalancingEnergyError('');
+    setBalancingEnergyMessage('');
+  }
+
+  async function handleCalculateBalancingEnergy() {
+    setBalancingEnergyError('');
+    setBalancingEnergyMessage('');
+
+    if (!canCalculateBalancingEnergy) {
+      setBalancingEnergyError('Загрузите хотя бы один Excel-файл балансирующей энергии.');
+      return;
+    }
+
+    setIsBalancingEnergyCalculating(true);
+    try {
+      const filesToParse = balancingEnergyFileSlots.filter((slot) => Boolean(balancingEnergyFiles[slot.key]));
+      const parsedFiles = await Promise.all(
+        filesToParse.map((slot) => parseBalancingEnergyFile({
+          file: balancingEnergyFiles[slot.key] as File,
+          stationId: slot.stationId,
+          stationName: slot.stationName,
+        })),
+      );
+      const draft = buildBalancingEnergyDraft(parsedFiles);
+      setBalancingEnergyDraft(draft);
+      setBalancingEnergyMessage('Черновик балансирующей энергии Укренерго, не сохранен.');
+    } catch (error) {
+      setBalancingEnergyDraft(null);
+      setBalancingEnergyError(error instanceof Error ? error.message : 'Не удалось прочитать файл балансирующей энергии.');
+    } finally {
+      setIsBalancingEnergyCalculating(false);
+    }
+  }
+
+  function handleSaveBalancingEnergyToProject() {
+    if (!balancingEnergyDraft || balancingEnergyRows.length === 0) {
+      setBalancingEnergyError('Сначала прочитайте файл балансирующей энергии.');
+      return;
+    }
+
+    for (const stationDraft of balancingEnergyRows) {
+      updateStationModule(stationDraft.period, stationDraft.stationId, 'balancingEnergy', {
+        manualInputs: {
+          period: stationDraft.period,
+          stationName: stationDraft.stationName,
+        },
+        uploadedFiles: [
+          {
+            fileName: stationDraft.sourceFileName,
+            source: 'browser',
+            uploadedAt: new Date().toISOString(),
+          },
+        ],
+        parsedData: {
+          sourceFileName: stationDraft.sourceFileName,
+          sheetName: stationDraft.sheetName,
+          headerRowNumber: stationDraft.headerRowNumber,
+          firstDataRowNumber: stationDraft.firstDataRowNumber,
+          rowsRead: stationDraft.rowsRead,
+          columns: stationDraft.columns,
+          diagnostics: stationDraft.diagnostics,
+        },
+        result: {
+          period: stationDraft.period,
+          stationId: stationDraft.stationId,
+          stationName: stationDraft.stationName,
+          sourceFileName: stationDraft.sourceFileName,
+          purchase: stationDraft.purchase,
+          sale: stationDraft.sale,
+          diagnostics: stationDraft.diagnostics,
+        },
+        validationErrors: (stationDraft.warnings ?? []).map((warning) => ({
+          moduleName: 'balancingEnergy',
+          message: warning,
+          createdAt: new Date().toISOString(),
+        })),
+      });
+    }
+
+    setProjectMemoryState(loadReportState());
+    setBalancingEnergyError('');
+    setBalancingEnergyMessage('Балансирующая энергия Укренерго сохранена в месячный отчет.');
+  }
+
   function handleCalculateImbalances() {
     setImbalancesError('');
     setImbalancesMessage('');
@@ -1169,7 +1348,7 @@ export function App() {
 
     const latestState = loadReportState();
     if (!latestState) {
-      setImbalancesError('В ProjectReportState нет сохраненных данных. Сначала сохраните RDN/VDR, DataHub и цены небалансов в месячный отчет.');
+      setImbalancesError('В состоянии проекта нет сохраненных данных. Сначала сохраните РДН/ВДР, DataHub и цены небалансов в месячный отчет.');
       return;
     }
 
@@ -1304,6 +1483,24 @@ export function App() {
     }
   }
 
+  async function handleExportTable2FinalReport() {
+    setFinalReportExportStatus(null);
+    setFinalReportExportError('');
+
+    const latestState = loadReportState();
+    const report = buildTable2FinalReportData(latestState, finalReportPeriod);
+    setProjectMemoryState(latestState);
+    setIsFinalReportExporting(true);
+    try {
+      const exportResult = await exportTable2FinalReportInBrowser(report);
+      setFinalReportExportStatus(exportResult);
+    } catch (error) {
+      setFinalReportExportError(error instanceof Error ? error.message : 'Не удалось экспортировать итоговую Таблицу_2.');
+    } finally {
+      setIsFinalReportExporting(false);
+    }
+  }
+
   async function handleCalculate() {
     if (!hasValidRate) {
       setErrorMessage('Укажите корректный средний курс EUR/UAH за месяц.');
@@ -1419,8 +1616,8 @@ export function App() {
     <section className="memory-panel" aria-labelledby="memory-title">
       <div className="memory-header">
         <div>
-          <p className="eyebrow">LocalStorage</p>
-          <h3 id="memory-title">Память проекта</h3>
+          <p className="eyebrow">Состояние проекта</p>
+          <h3 id="memory-title">Сохраненные данные</h3>
         </div>
         <div className="memory-actions">
           <button className="memory-refresh-button" type="button" onClick={handleRefreshProjectMemory}>
@@ -1433,7 +1630,7 @@ export function App() {
       </div>
 
       {memoryPeriods.length === 0 ? (
-        <p className="memory-empty">Сохраненных периодов пока нет. Выполните расчет Таблицы_0 для одной из станций.</p>
+        <p className="memory-empty">Сохраненных периодов пока нет. Рассчитайте данные и сохраните их в месячный отчет.</p>
       ) : (
         <div className="memory-period-list">
           {memoryPeriods.map((period) => {
@@ -1454,6 +1651,7 @@ export function App() {
                     const rdnVdrModule = periodState?.stations?.[stationId]?.rdnVdr;
                     const dataHubModule = periodState?.stations?.[stationId]?.datahub;
                     const mmsModule = periodState?.stations?.[stationId]?.mms;
+                    const balancingEnergyModule = periodState?.stations?.[stationId]?.balancingEnergy;
                     const imbalancesModule = periodState?.stations?.[stationId]?.imbalances;
                     const table0Result = table0Fcr?.result;
                     const hasTable0 = Boolean(table0Result);
@@ -1461,6 +1659,7 @@ export function App() {
                     const hasTable2 = Boolean(rdnVdrModule?.result);
                     const hasDataHub = Boolean(dataHubModule?.result);
                     const hasMms = Boolean(mmsModule?.result);
+                    const hasBalancingEnergy = Boolean(balancingEnergyModule?.result);
                     const hasImbalances = Boolean(imbalancesModule?.result);
                     const rdnVdrHourlyRowsCount = rdnVdrModule?.hourlyRows?.length ?? rdnVdrModule?.parsedData?.hourlyRows?.length ?? 0;
                     const dataHubHourlyRowsCount = dataHubModule?.hourlyRows?.length ?? dataHubModule?.parsedData?.hourlyRows?.length ?? 0;
@@ -1470,14 +1669,16 @@ export function App() {
                         <div className="memory-station-topline">
                           <strong>{stationLabels[stationId]}</strong>
                           <div className="memory-status-list">
-                            <span>{hasTable0 ? 'Таблица_0 ✅' : 'Таблица_0 нет данных'}</span>
-                            <span>{hasTable1 ? 'Таблица_1 ✅' : 'Таблица_1 нет данных'}</span>
+                            <span>{hasTable0 ? 'РПЧ/FCR ✅' : 'РПЧ/FCR нет данных'}</span>
+                            <span>{hasTable1 ? 'Оплата Укренерго ✅' : 'Оплата Укренерго нет данных'}</span>
                             <span>{hasTable2 ? 'РДН/ВДР ✅' : 'РДН/ВДР нет данных'}</span>
                             <span>{hasDataHub ? 'DataHub ✅' : 'DataHub нет данных'}</span>
-                            <span>{hasMms ? 'MMS ✅' : 'MMS нет данных'}</span>
+                            <span>{hasMms ? 'MMS/KNESS ✅' : 'MMS/KNESS нет данных'}</span>
+                            <span>{hasBalancingEnergy ? 'Балансирующая энергия ✅' : 'Балансирующая энергия нет данных'}</span>
                             <span>{hasImbalances ? 'Небалансы ✅' : 'Небалансы нет данных'}</span>
-                            {hasTable2 && <span>RDN/VDR hourly rows: {rdnVdrHourlyRowsCount}</span>}
-                            {hasDataHub && <span>DataHub hourly rows: {dataHubHourlyRowsCount}</span>}
+                            <span>Итоговый отчет: по сохраненным данным</span>
+                            {showProjectMemoryDetails && hasTable2 && <span>РДН/ВДР почасовых строк: {rdnVdrHourlyRowsCount}</span>}
+                            {showProjectMemoryDetails && hasDataHub && <span>DataHub почасовых строк: {dataHubHourlyRowsCount}</span>}
                           </div>
                         </div>
                         {showProjectMemoryDetails && table0Result ? (
@@ -1563,7 +1764,7 @@ export function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{activeModule === 'fcr' ? 'Модуль начисления' : 'Рабочий раздел'}</p>
+            <p className="eyebrow">{activeModule === 'service' || activeModule === 'projectState' ? 'Служебный раздел' : 'Рабочий раздел'}</p>
             <h2>{activeModuleMeta.title}</h2>
           </div>
           <div className="topbar-status">
@@ -1572,6 +1773,7 @@ export function App() {
           </div>
         </header>
 
+        {activeModule === 'service' && (
         <section className="cleanup-panel" aria-labelledby="cleanup-title">
           <div>
             <p className="eyebrow">Очистка данных</p>
@@ -1600,9 +1802,10 @@ export function App() {
           </div>
           {cleanupMessage && <p className="cleanup-message">{cleanupMessage}</p>}
         </section>
+        )}
 
         {activeModule === 'fcr' && (
-        <div className="subtab-bar" role="tablist" aria-label="FCR / RPC">
+        <div className="subtab-bar" role="tablist" aria-label="РПЧ / FCR">
           <button
             className={activeFcrSubTab === 'table0' ? 'subtab-button subtab-button-active' : 'subtab-button'}
             type="button"
@@ -1691,10 +1894,6 @@ export function App() {
                   <Calculator size={19} />
                   {isCalculating ? 'Чтение файла...' : 'Рассчитать'}
                 </button>
-                <button className="clear-button" type="button" onClick={handleClearDraftData}>
-                  <Trash2 size={18} />
-                  Очистить черновые данные
-                </button>
               </div>
           </section>
 
@@ -1737,7 +1936,7 @@ export function App() {
               </section>
             )}
 
-            {activeModule === 'fcr' && activeFcrSubTab === 'table0' && projectMemoryPanel}
+            {activeModule === 'projectState' && projectMemoryPanel}
 
             {activeModule === 'fcr' && activeFcrSubTab === 'table1' && (
             <section className="table1-panel" aria-labelledby="table1-title">
@@ -2139,6 +2338,28 @@ export function App() {
 
             {activeModule === 'imbalances' && (
             <section className="table1-panel table2-panel" aria-labelledby="market-prices-title">
+              <div className="subtab-bar imbalances-tabs" role="tablist" aria-label="Небалансы">
+                {[
+                  ['prices', 'Цены небалансов'],
+                  ['balancingEnergy', 'Балансирующая энергия Укренерго'],
+                  ['mms', 'MMS / КНЕСС'],
+                  ['calculation', 'Расчет небалансов'],
+                  ['hourly', 'Почасовая детализация'],
+                ].map(([tabId, label]) => (
+                  <button
+                    className={activeImbalancesSubTab === tabId ? 'subtab-button subtab-button-active' : 'subtab-button'}
+                    key={tabId}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeImbalancesSubTab === tabId}
+                    onClick={() => setActiveImbalancesSubTab(tabId as ImbalancesSubTab)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {activeImbalancesSubTab === 'prices' && (
               <div className="table2-subsection table2-subsection-first" aria-labelledby="market-prices-title">
                 <div className="section-heading result-heading">
                   <FileSpreadsheet size={22} />
@@ -2225,14 +2446,123 @@ export function App() {
                   </>
                 )}
               </div>
+              )}
 
+              {activeImbalancesSubTab === 'balancingEnergy' && (
+              <div className="table2-subsection" aria-labelledby="balancing-energy-title">
+                <div className="section-heading result-heading">
+                  <FileSpreadsheet size={22} />
+                  <div>
+                    <p className="eyebrow">Балансирующая энергия Укренерго</p>
+                    <h3 id="balancing-energy-title">Місячний / декадний звіт балансуючої енергії</h3>
+                    <p>Этот файл является финальным источником строк купівля/продаж балансуючої електроенергії НЕК “УКРЕНЕРГО” в Таблице_2.</p>
+                  </div>
+                </div>
+
+                <div className="table2-upload-grid table2-upload-grid-two">
+                  {balancingEnergyFileSlots.map((slot) => (
+                    <label className="table2-upload-card" key={slot.key}>
+                      <span>{slot.label}</span>
+                      <strong>{balancingEnergyFiles[slot.key]?.name ?? balancingEnergyDraft?.stations?.[slot.stationId]?.sourceFileName ?? 'Файл не выбран'}</strong>
+                      <input
+                        accept=".xlsx"
+                        type="file"
+                        onChange={(event) => handleBalancingEnergyFileChange(slot.key, event.target.files?.[0])}
+                      />
+                    </label>
+                  ))}
+                </div>
+
+                <div className="table2-actions">
+                  <button className="primary-button" disabled={!canCalculateBalancingEnergy} type="button" onClick={handleCalculateBalancingEnergy}>
+                    <Calculator size={18} />
+                    {isBalancingEnergyCalculating ? 'Чтение файла...' : 'Прочитать балансирующую энергию'}
+                  </button>
+                  <button className="clear-button" disabled={!balancingEnergyDraft} type="button" onClick={handleSaveBalancingEnergyToProject}>
+                    Сохранить балансирующую энергию в месячный отчет
+                  </button>
+                </div>
+
+                {balancingEnergyError && <p className="table1-message table-message-error">{balancingEnergyError}</p>}
+                {balancingEnergyMessage && <p className="table1-message">{balancingEnergyMessage}</p>}
+
+                {balancingEnergyDraft && (
+                  <>
+                    <div className={isBalancingEnergyDraftSavedToProject ? 'draft-status draft-status-saved' : 'draft-status draft-status-unsaved'}>
+                      <div>
+                        <span>{isBalancingEnergyDraftSavedToProject ? 'Финальная память' : 'Черновик'}</span>
+                        <strong>{isBalancingEnergyDraftSavedToProject ? 'Балансирующая энергия сохранена в месячный отчет' : 'Черновик балансирующей энергии, не сохранен'}</strong>
+                        <p>Период: {balancingEnergyDraft.period}</p>
+                      </div>
+                    </div>
+
+                    {(balancingEnergyDraft.warnings ?? []).length > 0 && (
+                      <div className="table2-warning-list">
+                        {(balancingEnergyDraft.warnings ?? []).map((warning) => (
+                          <p key={warning}>{warning}</p>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="payment-table-wrap table2-results-wrap">
+                      <table className="payment-table table2-results-table balancing-energy-table">
+                        <thead>
+                          <tr>
+                            <th>Станция</th>
+                            <th>Файл</th>
+                            <th>Период</th>
+                            <th>Покупка Укренерго, МВт⋅ч</th>
+                            <th>Средняя цена покупки</th>
+                            <th>Покупка без НДС</th>
+                            <th>Покупка с НДС</th>
+                            <th>Продажа Укренерго, МВт⋅ч</th>
+                            <th>Средняя цена продажи</th>
+                            <th>Продажа без НДС</th>
+                            <th>Продажа с НДС</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {balancingEnergyRows.map((row) => (
+                            <tr key={row.stationId}>
+                              <td>{row.stationName}</td>
+                              <td>{row.sourceFileName}</td>
+                              <td>{row.period}</td>
+                              <td>{numberFormatter.format(row.purchase.volumeMwh)}</td>
+                              <td>{moneyFormatter.format(row.purchase.averagePriceUahMwh)} грн</td>
+                              <td>{moneyFormatter.format(row.purchase.amountWithoutVatUah)} грн</td>
+                              <td>{moneyFormatter.format(row.purchase.amountWithVatUah)} грн</td>
+                              <td>{numberFormatter.format(row.sale.volumeMwh)}</td>
+                              <td>{moneyFormatter.format(row.sale.averagePriceUahMwh)} грн</td>
+                              <td>{moneyFormatter.format(row.sale.amountWithoutVatUah)} грн</td>
+                              <td>{moneyFormatter.format(row.sale.amountWithVatUah)} грн</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {balancingEnergyRows.some((row) => row.diagnostics.unknownDirections.length > 0) && (
+                      <div className="table2-warning-list">
+                        {balancingEnergyRows.flatMap((row) => row.diagnostics.unknownDirections.map((direction) => (
+                          <p key={`${row.stationId}-${direction.direction}`}>
+                            {row.stationName}: неизвестное направление “{direction.direction}”, строк: {direction.rows}, объем: {numberFormatter.format(direction.volumeMwh)} МВт⋅ч.
+                          </p>
+                        )))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              )}
+
+              {activeImbalancesSubTab === 'mms' && (
               <div className="table2-subsection" aria-labelledby="mms-title">
                 <div className="section-heading result-heading">
                   <Database size={22} />
                   <div>
                     <p className="eyebrow">MMS / КНЕСС</p>
                     <h3 id="mms-title">Обмен энергии между KNESS и станциями</h3>
-                    <p>Загрузите CSV-экспорты MMS. Сейчас приложение только читает направления KNESS ↔ станция и считает объемы обмена.</p>
+                    <p>Загрузите CSV-экспорты MMS. Приложение читает KNESS ↔ станция и диагностирует все дополнительные направления станции для объемов Укренерго/Operator/NA.</p>
                   </div>
                 </div>
 
@@ -2286,6 +2616,7 @@ export function App() {
                         <thead>
                           <tr>
                             <th>Станция</th>
+                            <th>Файл</th>
                             <th>KNESS → станция, МВт⋅ч</th>
                             <th>Станция → KNESS, МВт⋅ч</th>
                             <th>Сальдо, МВт⋅ч</th>
@@ -2297,6 +2628,7 @@ export function App() {
                           {mmsRows.map((row) => (
                             <tr key={row.stationId}>
                               <td>{row.stationName}</td>
+                              <td>{row.fileName}</td>
                               <td>{numberFormatter.format(row.knessToStationMwh)}</td>
                               <td>{numberFormatter.format(row.stationToKnessMwh)}</td>
                               <td>{numberFormatter.format(row.saldoMwh)}</td>
@@ -2322,17 +2654,117 @@ export function App() {
                         <strong>{numberFormatter.format(mmsDraft.summary?.saldoMwh ?? 0)} МВт⋅ч</strong>
                       </div>
                     </div>
+
+                    <div className="table2-diagnostics-block">
+                      <div className="section-heading result-heading compact-heading">
+                        <Database size={18} />
+                        <div>
+                          <p className="eyebrow">Колонки KNESS</p>
+                          <h4>Диагностика KNESS-колонок MMS</h4>
+                          <p>Здесь видно, какие CSV headers использованы для KNESS → station и station → KNESS, и сумма каждой колонки до округления.</p>
+                        </div>
+                      </div>
+                      <button className="memory-details-button diagnostic-toggle" type="button" onClick={() => setShowMmsKnessDiagnostics((value) => !value)}>
+                        {showMmsKnessDiagnostics ? 'Скрыть диагностику' : 'Показать диагностику'}
+                      </button>
+
+                      {showMmsKnessDiagnostics && (mmsKnessColumnRows.length > 0 ? (
+                        <div className="payment-table-wrap table2-results-wrap">
+                          <table className="payment-table table2-results-table mms-kness-columns-table">
+                            <thead>
+                              <tr>
+                                <th>Станция</th>
+                                <th>Файл</th>
+                                <th>Период</th>
+                                <th>Направление</th>
+                                <th>CSV header</th>
+                                <th>Колонка</th>
+                                <th>Использовано часов</th>
+                                <th>Сумма, kWh</th>
+                                <th>Сумма, MWh</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {mmsKnessColumnRows.map((column) => (
+                                <tr key={`${column.stationId}-${column.direction}-${column.header}`}>
+                                  <td>{column.stationName}</td>
+                                  <td>{column.sourceFileName}</td>
+                                  <td>{column.period}</td>
+                                  <td>{column.direction === 'KNESS_TO_STATION' ? 'KNESS → station' : 'station → KNESS'}</td>
+                                  <td>{column.header}</td>
+                                  <td>{column.columnIndex}</td>
+                                  <td>{column.rowsUsed}</td>
+                                  <td>{column.totalKwh.toFixed(6)}</td>
+                                  <td>{column.totalMwh.toFixed(6)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <p className="table1-message table-message-warning">
+                          KNESS-колонки не найдены. Проверьте, что CSV содержит направления KNESS_ENERGY ↔ station.
+                        </p>
+                      ))}
+                    </div>
+
+                    <div className="table2-diagnostics-block">
+                      <div className="section-heading result-heading compact-heading">
+                        <Database size={18} />
+                        <div>
+                          <p className="eyebrow">Направления MMS</p>
+                          <h4>Найденные направления MMS</h4>
+                          <p>Диагностика показывает все направления из CSV и группу, к которой они отнесены для финальной Таблицы_2.</p>
+                        </div>
+                      </div>
+                      <button className="memory-details-button diagnostic-toggle" type="button" onClick={() => setShowMmsDirectionDiagnostics((value) => !value)}>
+                        {showMmsDirectionDiagnostics ? 'Скрыть диагностику' : 'Показать диагностику'}
+                      </button>
+
+                      {showMmsDirectionDiagnostics && (mmsDirectionRows.length > 0 ? (
+                        <div className="payment-table-wrap table2-results-wrap">
+                          <table className="payment-table table2-results-table mms-directions-table">
+                            <thead>
+                              <tr>
+                                <th>Станция</th>
+                                <th>Направление из CSV</th>
+                                <th>Группа</th>
+                                <th>Поток</th>
+                                <th>Объем, МВт⋅ч</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {mmsDirectionRows.map((direction) => (
+                                <tr key={`${direction.stationId}-${direction.directionName}`}>
+                                  <td>{direction.stationName}</td>
+                                  <td>{direction.directionName}</td>
+                                  <td>{direction.group}</td>
+                                  <td>{direction.flow === 'toStation' ? 'к станции' : 'от станции'}</td>
+                                  <td>{numberFormatter.format(direction.volumeMwh)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <p className="table1-message table-message-warning">
+                          Направления MMS не найдены. Проверьте заголовки CSV-файла.
+                        </p>
+                      ))}
+                    </div>
                   </>
                 )}
               </div>
+              )}
 
+              {activeImbalancesSubTab === 'calculation' && (
               <div className="table2-subsection" aria-labelledby="imbalances-title">
                 <div className="section-heading result-heading">
                   <Zap size={22} />
                   <div>
-                    <p className="eyebrow">Calculated imbalances</p>
+                    <p className="eyebrow">Расчет небалансов</p>
                     <h3 id="imbalances-title">Расчет небалансов по сохраненным данным</h3>
-                    <p>Расчет использует финальную память проекта: RDN/VDR, DataHub и цены Укренерго. MMS/KNESS показывается только как контрольный слой.</p>
+                    <p>Расчет использует сохраненные данные проекта: РДН/ВДР, DataHub и цены Укренерго. MMS/KNESS показывается только как контрольный слой.</p>
                   </div>
                 </div>
 
@@ -2359,6 +2791,19 @@ export function App() {
 
                 {imbalancesError && <p className="table1-message table-message-error">{imbalancesError}</p>}
                 {imbalancesMessage && <p className="table1-message">{imbalancesMessage}</p>}
+              </div>
+              )}
+
+              {activeImbalancesSubTab === 'hourly' && (
+              <div className="table2-subsection" aria-labelledby="hourly-imbalances-title">
+                <div className="section-heading result-heading">
+                  <FileSpreadsheet size={22} />
+                  <div>
+                    <p className="eyebrow">Почасовая детализация</p>
+                    <h3 id="hourly-imbalances-title">Проверка почасового расчета небалансов</h3>
+                    <p>Используйте этот экран для проверки IN/OUT, РДН/ВДР, цен Укренерго и итогов по каждому часу.</p>
+                  </div>
+                </div>
 
                 <div className="hourly-detail-toolbar">
                   <label>
@@ -2377,7 +2822,7 @@ export function App() {
                   </button>
                   <button className="export-button" disabled={isHourlyImbalanceExporting} type="button" onClick={handleExportHourlyImbalances}>
                     <Download size={18} />
-                    {isHourlyImbalanceExporting ? 'Экспорт...' : 'Export hourly imbalances to Excel'}
+                    {isHourlyImbalanceExporting ? 'Экспорт...' : 'Экспорт почасовых небалансов в Excel'}
                   </button>
                 </div>
 
@@ -2390,22 +2835,22 @@ export function App() {
                       <thead>
                         <tr>
                           <th>Станция</th>
-                          <th>date</th>
-                          <th>hour</th>
+                          <th>Дата</th>
+                          <th>Час</th>
                           <th>DataHub IN, MWh</th>
                           <th>DataHub OUT, MWh</th>
-                          <th>RDN/VDR purchase volume, MWh</th>
-                          <th>RDN/VDR sale volume, MWh</th>
-                          <th>negative imbalance volume, MWh</th>
-                          <th>positive imbalance volume, MWh</th>
-                          <th>RDN price</th>
-                          <th>negative imbalance price</th>
-                          <th>positive imbalance price</th>
-                          <th>negative price used</th>
-                          <th>positive price used</th>
-                          <th>negative cost</th>
-                          <th>positive cost</th>
-                          <th>net result</th>
+                          <th>Покупка РДН/ВДР, MWh</th>
+                          <th>Продажа РДН/ВДР, MWh</th>
+                          <th>Негативный небаланс, MWh</th>
+                          <th>Позитивный небаланс, MWh</th>
+                          <th>Цена РДН</th>
+                          <th>Цена негативного небаланса</th>
+                          <th>Цена позитивного небаланса</th>
+                          <th>Примененная цена негативного</th>
+                          <th>Примененная цена позитивного</th>
+                          <th>Стоимость негативного</th>
+                          <th>Стоимость позитивного</th>
+                          <th>Итоговый результат</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2434,7 +2879,11 @@ export function App() {
                     </table>
                   </div>
                 )}
+              </div>
+              )}
 
+              {activeImbalancesSubTab === 'calculation' && (
+              <div className="table2-subsection">
                 {imbalancesDraft && (
                   <>
                     <div className={isImbalancesDraftSavedToProject ? 'draft-status draft-status-saved' : 'draft-status draft-status-unsaved'}>
@@ -2442,8 +2891,8 @@ export function App() {
                         <span>{isImbalancesDraftSavedToProject ? 'Финальная память' : 'Черновик'}</span>
                         <strong>{isImbalancesDraftSavedToProject ? 'Небалансы сохранены в месячный отчет' : 'Черновик небалансов, не сохранен'}</strong>
                         <p>
-                          Период: {imbalancesDraft.period} · Режим: {imbalancesDraft.calculationMode === 'hourly' ? 'Hourly calculation' : 'Monthly approximate calculation'} ·
-                          Часов использовано: {imbalancesDraft.hourlyRowsUsed} · Missing hours: {imbalancesDraft.missingHours}
+                          Период: {imbalancesDraft.period} · Режим: {imbalancesDraft.calculationMode === 'hourly' ? 'Почасовой расчет' : 'Приблизительный месячный расчет'} ·
+                          Использовано часов: {imbalancesDraft.hourlyRowsUsed} · Пропущенные часы: {imbalancesDraft.missingHours}
                         </p>
                       </div>
                     </div>
@@ -2462,15 +2911,15 @@ export function App() {
                           <tr>
                             <th>Станция</th>
                             <th>Режим</th>
-                            <th>Hourly rows used</th>
-                            <th>Missing hours</th>
+                            <th>Использовано часов</th>
+                            <th>Пропущенные часы</th>
                             <th>Негативный небаланс, МВт⋅ч</th>
                             <th>Стоимость негативного, грн</th>
                             <th>Средняя цена негативного, грн</th>
                             <th>Позитивный небаланс, МВт⋅ч</th>
                             <th>Стоимость позитивного, грн</th>
                             <th>Средняя цена позитивного, грн</th>
-                            <th>Net result, грн</th>
+                            <th>Итоговый результат, грн</th>
                             <th>KNESS → станция, МВт⋅ч</th>
                             <th>Станция → KNESS, МВт⋅ч</th>
                             <th>MMS balance, МВт⋅ч</th>
@@ -2480,7 +2929,7 @@ export function App() {
                           {imbalanceRows.map((row) => (
                             <tr key={row.stationId}>
                               <td>{row.stationName}</td>
-                              <td>{row.calculationMode === 'hourly' ? 'Hourly' : 'Monthly approximate'}</td>
+                              <td>{row.calculationMode === 'hourly' ? 'Почасовой' : 'Приблизительный месячный'}</td>
                               <td>{row.hourlyRowsUsed}</td>
                               <td>{row.missingHours}</td>
                               <td>{numberFormatter.format(row.negativeImbalanceVolumeMwh)}</td>
@@ -2501,15 +2950,15 @@ export function App() {
 
                     <div className="table2-summary-grid table2-summary-grid-compact">
                       <div>
-                        <span>Calculation mode</span>
-                        <strong>{imbalancesDraft.calculationMode === 'hourly' ? 'Hourly calculation' : 'Monthly approximate calculation'}</strong>
+                        <span>Режим расчета</span>
+                        <strong>{imbalancesDraft.calculationMode === 'hourly' ? 'Почасовой расчет' : 'Приблизительный месячный расчет'}</strong>
                       </div>
                       <div>
-                        <span>Hourly rows used</span>
+                        <span>Использовано часов</span>
                         <strong>{imbalancesDraft.summary.hourlyRowsUsed}</strong>
                       </div>
                       <div>
-                        <span>Missing hours</span>
+                        <span>Пропущенные часы</span>
                         <strong>{imbalancesDraft.summary.missingHours}</strong>
                       </div>
                       <div>
@@ -2536,6 +2985,7 @@ export function App() {
                   </>
                 )}
               </div>
+              )}
             </section>
             )}
 
@@ -2544,16 +2994,134 @@ export function App() {
                 <div className="section-heading result-heading">
                   <FileText size={22} />
                   <div>
-                    <p className="eyebrow">Final Report</p>
-                    <h3 id="final-report-title">Итоговый отчет</h3>
-                    <p>Final Table_2 report will be generated here after RDN/VDR, DataHub, prices, MMS and imbalance calculations are saved.</p>
+                    <p className="eyebrow">Итоговый отчет</p>
+                    <h3 id="final-report-title">Таблица_2 — купівля/продаж електроенергії</h3>
+                    <p>Отчет формируется только из ProjectReportState за выбранный месяц. Тестовые цифры из шаблона не используются как источник данных.</p>
                   </div>
                 </div>
+
+                <div className="final-report-toolbar">
+                  <label>
+                    <span>Период отчета</span>
+                    <input
+                      type="month"
+                      value={finalReportPeriod}
+                      onChange={(event) => {
+                        setFinalReportPeriod(event.target.value as ReportPeriod);
+                        setFinalReportExportStatus(null);
+                        setFinalReportExportError('');
+                      }}
+                    />
+                  </label>
+                  <div>
+                    <span>Лист шаблона</span>
+                    <strong>{finalReportData.monthSheetName}</strong>
+                  </div>
+                  <button className="export-button" disabled={isFinalReportExporting} type="button" onClick={handleExportTable2FinalReport}>
+                    <Download size={18} />
+                    {isFinalReportExporting ? 'Экспорт...' : 'Экспортировать Таблицу_2 в Excel'}
+                  </button>
+                </div>
+
+                {finalReportExportError && <p className="table1-message table-message-error">{finalReportExportError}</p>}
+                {finalReportExportStatus && (
+                  <div className="export-summary" aria-live="polite">
+                    <h4>Статус экспорта Таблицы_2</h4>
+                    <div className="export-summary-grid">
+                      <div>
+                        <span>Файл</span>
+                        <strong>{finalReportExportStatus.fileName}</strong>
+                      </div>
+                      <div>
+                        <span>Лист</span>
+                        <strong>{finalReportExportStatus.sheetName}</strong>
+                      </div>
+                      <div className="export-summary-wide">
+                        <span>Источник шаблона</span>
+                        <strong>{finalReportExportStatus.templateSource}</strong>
+                      </div>
+                      <div className="export-summary-wide">
+                        <span>Найденные станции</span>
+                        <strong>{finalReportExportStatus.foundStations.join('; ') || '—'}</strong>
+                      </div>
+                      <div className="export-summary-wide">
+                        <span>Заполненные строки</span>
+                        <strong>{finalReportExportStatus.filledRows.join('; ') || '—'}</strong>
+                      </div>
+                      <div className="export-summary-wide">
+                        <span>Не заполнено</span>
+                        <strong>{finalReportExportStatus.missingRows.join('; ') || '—'}</strong>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {(finalReportData.warnings.length > 0 || (finalReportExportStatus?.warnings.length ?? 0) > 0) && (
+                  <div className="table2-warning-list">
+                    <p>Финальная Таблица_2 пока не полностью готова: проверьте отсутствующие источники и стоимость КНЕСС.</p>
+                    <button className="memory-details-button diagnostic-toggle" type="button" onClick={() => setShowFinalReportWarnings((value) => !value)}>
+                      {showFinalReportWarnings ? 'Скрыть диагностику' : 'Показать диагностику'}
+                    </button>
+                    {showFinalReportWarnings && [...finalReportData.warnings, ...(finalReportExportStatus?.warnings ?? [])].map((warning) => (
+                      <p key={warning}>{warning}</p>
+                    ))}
+                  </div>
+                )}
+
+                <div className="final-readiness-heading">
+                  <p className="eyebrow">Готовность Таблицы_2</p>
+                  <h4>Проверка источников по станциям</h4>
+                </div>
+                <div className="final-readiness-grid">
+                  {finalReportData.stations.map((stationReport) => (
+                    <div className="final-readiness-card" key={stationReport.stationId}>
+                      <strong>{stationReport.stationName}</strong>
+                      <div>
+                        <span>{stationReport.readiness.rdnVdr ? 'РДН/ВДР загружено' : 'РДН/ВДР отсутствует'}</span>
+                        <span>{stationReport.readiness.datahub ? 'DataHub ✅' : 'DataHub отсутствует'}</span>
+                        <span>{stationReport.readiness.imbalances ? 'Небалансы рассчитаны' : 'Небалансы отсутствуют'}</span>
+                        <span>{stationReport.readiness.mms ? 'MMS/KNESS ✅' : 'MMS/KNESS отсутствует'}</span>
+                        <span>{stationReport.readiness.balancingEnergy ? 'Балансирующая энергия Укренерго загружена' : 'Балансирующая энергия Укренерго отсутствует'}</span>
+                        <span>Стоимость KNESS: ожидает акт</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {finalReportData.stations.map((stationReport) => (
+                  <div className="final-report-station" key={stationReport.stationId}>
+                    <h4>{stationReport.stationName}</h4>
+                    <div className="payment-table-wrap table2-results-wrap">
+                      <table className="payment-table final-report-table">
+                        <thead>
+                          <tr>
+                            <th>Операція</th>
+                            <th>Обсяг, МВт*год</th>
+                            <th>Середньозважена ціна, грн/МВт*год</th>
+                            <th>Вартість без ПДВ</th>
+                            <th>Вартість з ПДВ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stationReport.rows.map((row) => (
+                            <tr className={row.section === 'saldo' || row.operation.includes('електроенергії') ? 'final-report-total-row' : ''} key={`${stationReport.stationId}-${row.operation}`}>
+                              <td>
+                                {row.operation}
+                                {row.note && <small>{row.note}</small>}
+                              </td>
+                              <td>{formatOptionalNumber(row.volumeMwh)}</td>
+                              <td>{formatOptionalMoney(row.averagePriceUahMwh)}</td>
+                              <td>{formatOptionalMoney(row.costWithoutVatUah)}</td>
+                              <td>{formatOptionalMoney(row.costWithVatUah)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
               </section>
             )}
-
-            {activeModule === 'fcr' && activeFcrSubTab === 'table1' && projectMemoryPanel}
-            {activeModule !== 'fcr' && activeModule !== 'finalReport' && projectMemoryPanel}
 
             {activeModule === 'fcr' && activeFcrSubTab === 'table0' && errorMessage && (
               <section className="message-panel message-panel-error" aria-live="polite">
@@ -2777,11 +3345,11 @@ export function App() {
             <ul>
               <li>FCR/RPC</li>
               <li>оплата Укренерго</li>
-              <li>RDN/VDR</li>
+              <li>РДН/ВДР</li>
               <li>DataHub</li>
               <li>Imbalances</li>
               <li>MMS/KNESS</li>
-              <li>будущие данные Final Report</li>
+              <li>будущие данные итогового отчета</li>
             </ul>
             <p><strong>Это действие нельзя отменить.</strong></p>
             <div className="confirm-actions">

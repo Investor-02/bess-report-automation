@@ -7,6 +7,7 @@ export type ReportModuleName =
   | 'table1Payments'
   | 'rdnVdr'
   | 'mms'
+  | 'balancingEnergy'
   | 'imbalances'
   | 'datahub'
   | 'acts'
@@ -218,6 +219,14 @@ export type MmsModuleState = ReportModuleState<
   {
     knessToStationKwh: number;
     stationToKnessKwh: number;
+    operatorToStationMwh?: number;
+    stationToOperatorMwh?: number;
+    naToStationMwh?: number;
+    stationToNaMwh?: number;
+    otherBalancingToStationMwh?: number;
+    stationToOtherBalancingMwh?: number;
+    directionDiagnostics?: MmsDirectionDiagnostic[];
+    knessColumnDiagnostics?: MmsKnessColumnDiagnostic[];
     rowsRead: number;
     firstDate: string;
     lastDate: string;
@@ -228,10 +237,79 @@ export type MmsModuleState = ReportModuleState<
     stationName: string;
     knessToStationMwh: number;
     stationToKnessMwh: number;
+    operatorToStationMwh?: number;
+    stationToOperatorMwh?: number;
+    naToStationMwh?: number;
+    stationToNaMwh?: number;
+    otherBalancingToStationMwh?: number;
+    stationToOtherBalancingMwh?: number;
+    directionDiagnostics?: MmsDirectionDiagnostic[];
+    knessColumnDiagnostics?: MmsKnessColumnDiagnostic[];
     saldoMwh: number;
     rowsRead: number;
     firstDate: string;
     lastDate: string;
+  }
+>;
+
+export type MmsDirectionDiagnostic = {
+  directionName: string;
+  group: 'KNESS' | 'Operator' | 'NA' | 'Other' | 'Unknown';
+  flow: 'toStation' | 'fromStation';
+  volumeMwh: number;
+};
+
+export type MmsKnessColumnDiagnostic = {
+  direction: 'KNESS_TO_STATION' | 'STATION_TO_KNESS';
+  header: string;
+  columnIndex: number;
+  totalKwh: number;
+  totalMwh: number;
+  rowsUsed: number;
+};
+
+export type BalancingEnergyDirectionSummary = {
+  volumeMwh: number;
+  averagePriceUahMwh: number;
+  amountWithoutVatUah: number;
+  amountWithVatUah: number;
+};
+
+export type BalancingEnergyModuleState = ReportModuleState<
+  {
+    period?: ReportPeriod;
+    stationName?: string;
+  },
+  {
+    sourceFileName: string;
+    sheetName: string;
+    headerRowNumber: number;
+    firstDataRowNumber: number;
+    rowsRead: number;
+    columns: {
+      date: string;
+      period: string;
+      direction: string;
+      volume: string;
+      price: string;
+      amount: string;
+    };
+    diagnostics: {
+      unknownDirections: Array<{ direction: string; rows: number; volumeMwh: number; amountWithoutVatUah: number }>;
+      directions: Array<{ direction: string; rows: number; volumeMwh: number; amountWithoutVatUah: number }>;
+    };
+  },
+  {
+    period: ReportPeriod;
+    stationId: StationId;
+    stationName: string;
+    sourceFileName: string;
+    purchase: BalancingEnergyDirectionSummary;
+    sale: BalancingEnergyDirectionSummary;
+    diagnostics: {
+      unknownDirections: Array<{ direction: string; rows: number; volumeMwh: number; amountWithoutVatUah: number }>;
+      directions: Array<{ direction: string; rows: number; volumeMwh: number; amountWithoutVatUah: number }>;
+    };
   }
 >;
 
@@ -287,6 +365,7 @@ export type StationReportState = {
   table1Payments: Table1PaymentsModuleState;
   rdnVdr: RdnVdrModuleState;
   mms: MmsModuleState;
+  balancingEnergy: BalancingEnergyModuleState;
   imbalances: ImbalancesModuleState;
   datahub: DataHubModuleState;
   acts: ReportModuleState;
@@ -347,6 +426,7 @@ function createEmptyStationState(): StationReportState {
     table1Payments: createEmptyModuleState() as Table1PaymentsModuleState,
     rdnVdr: createEmptyModuleState() as RdnVdrModuleState,
     mms: createEmptyModuleState() as MmsModuleState,
+    balancingEnergy: createEmptyModuleState() as BalancingEnergyModuleState,
     imbalances: createEmptyModuleState() as ImbalancesModuleState,
     datahub: createEmptyModuleState() as DataHubModuleState,
     acts: createEmptyModuleState(),
@@ -383,6 +463,7 @@ function normalizeStationState(stationState: Partial<StationReportState> | undef
     table1Payments: normalizeModuleState(stationState?.table1Payments ?? emptyStationState.table1Payments),
     rdnVdr: normalizeModuleState(stationState?.rdnVdr ?? emptyStationState.rdnVdr),
     mms: normalizeModuleState(stationState?.mms ?? emptyStationState.mms),
+    balancingEnergy: normalizeModuleState(stationState?.balancingEnergy ?? emptyStationState.balancingEnergy),
     imbalances: normalizeModuleState(stationState?.imbalances ?? emptyStationState.imbalances),
     datahub: normalizeModuleState(stationState?.datahub ?? emptyStationState.datahub),
     acts: normalizeModuleState(stationState?.acts ?? emptyStationState.acts),
