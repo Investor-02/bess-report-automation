@@ -103,6 +103,18 @@ export type RdnVdrMarketResult = {
   rowsRead: number;
 };
 
+export type RdnVdrHourlyRow = {
+  date: string;
+  hour: string;
+  market: 'РДН' | 'ВДР';
+  purchaseVolumeMwh: number;
+  purchaseAmountUah: number;
+  saleVolumeMwh: number;
+  saleAmountUah: number;
+  purchasePriceUahMwh: number;
+  salePriceUahMwh: number;
+};
+
 export type RdnVdrModuleState = ReportModuleState<
   {
     period?: ReportPeriod;
@@ -111,6 +123,7 @@ export type RdnVdrModuleState = ReportModuleState<
   {
     rdn: RdnVdrMarketResult;
     vdr: RdnVdrMarketResult;
+    hourlyRows?: RdnVdrHourlyRow[];
   },
   {
     period: ReportPeriod;
@@ -122,7 +135,17 @@ export type RdnVdrModuleState = ReportModuleState<
     };
     totalTradingResultUah: number;
   }
->;
+> & {
+  hourlyRows?: RdnVdrHourlyRow[];
+};
+
+export type DataHubHourlyRow = {
+  date: string;
+  hour: string;
+  inMwh: number;
+  outMwh: number;
+  balanceMwh: number;
+};
 
 export type DataHubModuleState = ReportModuleState<
   {
@@ -133,6 +156,7 @@ export type DataHubModuleState = ReportModuleState<
     totalInKwh: number;
     totalOutKwh: number;
     hourlyRowsRead: number;
+    hourlyRows?: DataHubHourlyRow[];
   },
   {
     period: ReportPeriod;
@@ -145,7 +169,9 @@ export type DataHubModuleState = ReportModuleState<
     saldoMwh: number;
     hourlyRowsRead: number;
   }
->;
+> & {
+  hourlyRows?: DataHubHourlyRow[];
+};
 
 export type MarketPriceHourlyRow = {
   date: string;
@@ -209,12 +235,59 @@ export type MmsModuleState = ReportModuleState<
   }
 >;
 
+export type ImbalanceStationResult = {
+  period: ReportPeriod;
+  stationId: StationId;
+  stationName: string;
+  calculationMode: 'hourly' | 'monthlyApprox';
+  hourlyRowsUsed: number;
+  missingHours: number;
+  negativeImbalanceVolumeMwh: number;
+  totalNegativeVolumeMwh: number;
+  negativeImbalanceCostUah: number;
+  totalNegativeCostUah: number;
+  averageNegativeImbalancePriceUsedUah: number;
+  averageNegativePriceUsed: number;
+  positiveImbalanceVolumeMwh: number;
+  totalPositiveVolumeMwh: number;
+  positiveImbalanceCostUah: number;
+  totalPositiveCostUah: number;
+  averagePositiveImbalancePriceUsedUah: number;
+  averagePositivePriceUsed: number;
+  netImbalanceResultUah: number;
+  mmsKnessToStationMwh: number;
+  mmsStationToKnessMwh: number;
+  mmsBalanceMwh: number;
+  source: {
+    dataHubInMwh: number;
+    dataHubOutMwh: number;
+    purchaseVolumeMwh: number;
+    saleVolumeMwh: number;
+    marketPriceRowsRead: number;
+    dataHubHourlyRowsRead: number;
+    rdnRowsRead: number;
+    vdrRowsRead: number;
+  };
+};
+
+export type ImbalancesModuleState = ReportModuleState<
+  {
+    period?: ReportPeriod;
+    stationName?: string;
+  },
+  {
+    calculationMode: 'hourly' | 'monthlyApprox';
+    warnings: string[];
+  },
+  ImbalanceStationResult
+>;
+
 export type StationReportState = {
   table0Fcr: Table0FcrModuleState;
   table1Payments: Table1PaymentsModuleState;
   rdnVdr: RdnVdrModuleState;
   mms: MmsModuleState;
-  imbalances: ReportModuleState;
+  imbalances: ImbalancesModuleState;
   datahub: DataHubModuleState;
   acts: ReportModuleState;
   summary: ReportModuleState;
@@ -274,7 +347,7 @@ function createEmptyStationState(): StationReportState {
     table1Payments: createEmptyModuleState() as Table1PaymentsModuleState,
     rdnVdr: createEmptyModuleState() as RdnVdrModuleState,
     mms: createEmptyModuleState() as MmsModuleState,
-    imbalances: createEmptyModuleState(),
+    imbalances: createEmptyModuleState() as ImbalancesModuleState,
     datahub: createEmptyModuleState() as DataHubModuleState,
     acts: createEmptyModuleState(),
     summary: createEmptyModuleState(),
@@ -399,6 +472,26 @@ export function saveReportState(state: ProjectReportState) {
   };
 
   storage.setItem(projectReportStateStorageKey, JSON.stringify(stateToSave));
+}
+
+export function deleteReportPeriod(period: string) {
+  const normalizedPeriod = normalizePeriod(period);
+  const state = loadReportState();
+  const storage = getStorage();
+  if (!state || !storage || !state.periods[normalizedPeriod]) {
+    return state;
+  }
+
+  delete state.periods[normalizedPeriod];
+  const remainingPeriods = Object.keys(state.periods).sort() as ReportPeriod[];
+  if (remainingPeriods.length === 0) {
+    storage.removeItem(projectReportStateStorageKey);
+    return null;
+  }
+
+  state.activePeriod = remainingPeriods.at(-1) ?? remainingPeriods[0];
+  saveReportState(state);
+  return loadReportState();
 }
 
 export function updateStationModule<T extends ReportModuleName>(

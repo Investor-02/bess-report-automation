@@ -1,4 +1,4 @@
-import type { ReportPeriod, StationId } from './state/projectReportState';
+import type { DataHubHourlyRow, ReportPeriod, StationId } from './state/projectReportState';
 
 export type DataHubFileInput = {
   file: File;
@@ -17,6 +17,7 @@ export type DataHubParsedFile = {
   totalOutMwh: number;
   saldoMwh: number;
   hourlyRowsRead: number;
+  hourlyRows: DataHubHourlyRow[];
   warnings: string[];
 };
 
@@ -61,6 +62,19 @@ function getCellText(value: unknown) {
 
 function roundEnergy(value: number) {
   return Math.round((value + Number.EPSILON) * 1000) / 1000;
+}
+
+function parseDateHour(value: unknown) {
+  const text = getCellText(value);
+  const match = text.match(/(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):\d{2}/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    date: `${match[3]}-${match[2]}-${match[1]}`,
+    hour: match[4].padStart(2, '0'),
+  };
 }
 
 function parsePeriodFromFileName(fileName: string): ReportPeriod | null {
@@ -136,6 +150,7 @@ export async function parseDataHubFile(input: DataHubFileInput): Promise<DataHub
   let totalInKwh = 0;
   let totalOutKwh = 0;
   let hourlyRowsRead = 0;
+  const hourlyRows: DataHubHourlyRow[] = [];
 
   for (let rowNumber = directionRowNumber + 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
     const row = worksheet.getRow(rowNumber);
@@ -147,14 +162,24 @@ export async function parseDataHubFile(input: DataHubFileInput): Promise<DataHub
 
     const inValue = toNumber(row.getCell(inColumn).value);
     const outValue = toNumber(row.getCell(outColumn).value);
+    const dateHour = parseDateHour(row.getCell(1).value);
 
-    if (inValue === 0 && outValue === 0) {
+    if (!dateHour) {
       continue;
     }
 
     totalInKwh += inValue;
     totalOutKwh += outValue;
     hourlyRowsRead += 1;
+    const inMwh = roundEnergy(inValue / 1000);
+    const outMwh = roundEnergy(outValue / 1000);
+    hourlyRows.push({
+      date: dateHour.date,
+      hour: dateHour.hour,
+      inMwh,
+      outMwh,
+      balanceMwh: roundEnergy(inMwh - outMwh),
+    });
   }
 
   if (hourlyRowsRead === 0) {
@@ -180,6 +205,7 @@ export async function parseDataHubFile(input: DataHubFileInput): Promise<DataHub
     totalOutMwh,
     saldoMwh: roundEnergy(totalInMwh - totalOutMwh),
     hourlyRowsRead,
+    hourlyRows,
     warnings: getStationWarnings(input.file.name, input.stationId, period),
   };
 }

@@ -1,4 +1,4 @@
-import type { ReportPeriod, RdnVdrMarketResult, StationId } from './state/projectReportState';
+import type { ReportPeriod, RdnVdrHourlyRow, RdnVdrMarketResult, StationId } from './state/projectReportState';
 
 export type RdnVdrMarket = 'РДН' | 'ВДР';
 
@@ -14,6 +14,7 @@ export type RdnVdrParsedFile = RdnVdrMarketResult & {
   stationName: string;
   period: ReportPeriod;
   fileName: string;
+  hourlyRows: RdnVdrHourlyRow[];
   warnings: string[];
 };
 
@@ -67,6 +68,45 @@ function round(value: number, digits = 2) {
 
 function normalizeHeader(value: unknown) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function normalizeDate(value: unknown) {
+  const text = String(value ?? '').trim();
+  const slashMatch = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (slashMatch) {
+    const [, month, day, year] = slashMatch;
+    const fullYear = year.length === 2 ? `20${year}` : year;
+    return `${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+
+  const dotMatch = text.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  if (dotMatch) {
+    const [, day, month, year] = dotMatch;
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  }
+
+  return '';
+}
+
+function normalizeHour(value: unknown) {
+  const text = String(value ?? '').trim();
+  const numericHour = Number(text);
+  if (Number.isFinite(numericHour)) {
+    const startHour = Math.max(0, Math.min(23, Math.trunc(numericHour)));
+    return String(startHour).padStart(2, '0');
+  }
+
+  const rangeMatch = text.match(/(\d{1,2})\s*:\s*\d{2}/);
+  if (rangeMatch) {
+    return rangeMatch[1].padStart(2, '0');
+  }
+
+  return '';
 }
 
 function findColumn(headers: unknown[], predicates: string[]) {
@@ -125,12 +165,23 @@ function calculateAverages(result: Omit<RdnVdrMarketResult, 'averagePurchasePric
   };
 }
 
-function parseRdnRows(rows: unknown[][]): RdnVdrMarketResult {
+function calculateRowPrices(row: Omit<RdnVdrHourlyRow, 'purchasePriceUahMwh' | 'salePriceUahMwh'>): RdnVdrHourlyRow {
+  return {
+    ...row,
+    purchasePriceUahMwh: row.purchaseVolumeMwh > 0 ? round(row.purchaseAmountUah / row.purchaseVolumeMwh) : 0,
+    salePriceUahMwh: row.saleVolumeMwh > 0 ? round(row.saleAmountUah / row.saleVolumeMwh) : 0,
+  };
+}
+
+function parseRdnRows(rows: unknown[][]): RdnVdrMarketResult & { hourlyRows: RdnVdrHourlyRow[] } {
   const headers = rows[0] ?? [];
+  const dateColumn = findColumn(headers, ['доба']);
+  const hourColumn = findColumn(headers, ['розрахунковий', 'період']);
   const purchaseVolumeColumn = findColumn(headers, ['обсяг', 'куп']);
   const purchaseAmountColumn = findColumn(headers, ['варт', 'куп']);
   const saleVolumeColumn = findColumn(headers, ['обсяг', 'прод']);
   const saleAmountColumn = findColumn(headers, ['варт', 'прод']);
+  const hourlyRows: RdnVdrHourlyRow[] = [];
   const result = {
     market: 'РДН' as const,
     purchaseVolumeMwh: 0,
@@ -146,20 +197,39 @@ function parseRdnRows(rows: unknown[][]): RdnVdrMarketResult {
     }
 
     result.rowsRead += 1;
-    result.purchaseVolumeMwh += parseNumber(row[purchaseVolumeColumn]);
-    result.purchaseAmountUah += parseNumber(row[purchaseAmountColumn]);
-    result.saleVolumeMwh += parseNumber(row[saleVolumeColumn]);
-    result.saleAmountUah += parseNumber(row[saleAmountColumn]);
+    const hourlyRow = calculateRowPrices({
+      date: normalizeDate(row[dateColumn]),
+      hour: normalizeHour(row[hourColumn]),
+      market: 'РДН',
+      purchaseVolumeMwh: parseNumber(row[purchaseVolumeColumn]),
+      purchaseAmountUah: parseNumber(row[purchaseAmountColumn]),
+      saleVolumeMwh: parseNumber(row[saleVolumeColumn]),
+      saleAmountUah: parseNumber(row[saleAmountColumn]),
+    });
+    result.purchaseVolumeMwh += hourlyRow.purchaseVolumeMwh;
+    result.purchaseAmountUah += hourlyRow.purchaseAmountUah;
+    result.saleVolumeMwh += hourlyRow.saleVolumeMwh;
+    result.saleAmountUah += hourlyRow.saleAmountUah;
+    if (hourlyRow.date && hourlyRow.hour) {
+      hourlyRows.push(hourlyRow);
+    }
   }
 
-  return calculateAverages(result);
+  return {
+    ...calculateAverages(result),
+    hourlyRows,
+  };
 }
 
-function parseVdrRows(rows: unknown[][]): RdnVdrMarketResult {
+function parseVdrRows(rows: unknown[][]): RdnVdrMarketResult & { hourlyRows: RdnVdrHourlyRow[] } {
   const headers = rows[0] ?? [];
   const operationColumn = findColumn(headers, ['вид', 'опера']);
+  const dateColumn = findColumn(headers, ['доба']);
+  const hourColumn = findColumn(headers, ['розрахунковий', 'період']);
   const volumeColumn = findColumn(headers, ['обсяг']);
   const amountColumn = findColumn(headers, ['варт']);
+  const priceColumn = findColumn(headers, ['ціна']);
+  const hourlyRows: RdnVdrHourlyRow[] = [];
   const result = {
     market: 'ВДР' as const,
     purchaseVolumeMwh: 0,
@@ -175,18 +245,44 @@ function parseVdrRows(rows: unknown[][]): RdnVdrMarketResult {
     }
 
     const operation = normalizeHeader(row[operationColumn]);
+    const volumeMwh = parseNumber(row[volumeColumn]);
+    const amountUah = parseNumber(row[amountColumn]);
+    const priceUahMwh = parseNumber(row[priceColumn]);
+    const hourlyRow: RdnVdrHourlyRow = {
+      date: normalizeDate(row[dateColumn]),
+      hour: normalizeHour(row[hourColumn]),
+      market: 'ВДР',
+      purchaseVolumeMwh: 0,
+      purchaseAmountUah: 0,
+      saleVolumeMwh: 0,
+      saleAmountUah: 0,
+      purchasePriceUahMwh: 0,
+      salePriceUahMwh: 0,
+    };
     result.rowsRead += 1;
     if (operation.includes('куп')) {
-      result.purchaseVolumeMwh += parseNumber(row[volumeColumn]);
-      result.purchaseAmountUah += parseNumber(row[amountColumn]);
+      result.purchaseVolumeMwh += volumeMwh;
+      result.purchaseAmountUah += amountUah;
+      hourlyRow.purchaseVolumeMwh = volumeMwh;
+      hourlyRow.purchaseAmountUah = amountUah;
+      hourlyRow.purchasePriceUahMwh = priceUahMwh || (volumeMwh > 0 ? round(amountUah / volumeMwh) : 0);
     }
     if (operation.includes('прод')) {
-      result.saleVolumeMwh += parseNumber(row[volumeColumn]);
-      result.saleAmountUah += parseNumber(row[amountColumn]);
+      result.saleVolumeMwh += volumeMwh;
+      result.saleAmountUah += amountUah;
+      hourlyRow.saleVolumeMwh = volumeMwh;
+      hourlyRow.saleAmountUah = amountUah;
+      hourlyRow.salePriceUahMwh = priceUahMwh || (volumeMwh > 0 ? round(amountUah / volumeMwh) : 0);
+    }
+    if (hourlyRow.date && hourlyRow.hour && (hourlyRow.purchaseVolumeMwh > 0 || hourlyRow.saleVolumeMwh > 0)) {
+      hourlyRows.push(hourlyRow);
     }
   }
 
-  return calculateAverages(result);
+  return {
+    ...calculateAverages(result),
+    hourlyRows,
+  };
 }
 
 export async function parseRdnVdrFile(input: RdnVdrFileInput): Promise<RdnVdrParsedFile> {
@@ -208,6 +304,7 @@ export async function parseRdnVdrFile(input: RdnVdrFileInput): Promise<RdnVdrPar
     stationName: input.stationName,
     period,
     fileName: input.file.name,
+    hourlyRows: result.hourlyRows,
     warnings: getFileWarnings(input.file.name, input.stationId, input.market, period),
   };
 }

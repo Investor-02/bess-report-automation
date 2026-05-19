@@ -22,10 +22,18 @@ import { exportTable1InBrowser, type Table1BrowserExportResult } from './table1B
 import { buildDataHubDraft, parseDataHubFile, type DataHubDraftResult } from './table2DataHub';
 import { parseMarketPricesFile, type MarketPricesDraftResult } from './table2MarketPrices';
 import { buildMmsDraft, parseMmsFile, type MmsDraftResult } from './table2Mms';
+import {
+  buildHourlyImbalanceDetailRows,
+  calculateImbalancesDraft,
+  exportHourlyImbalancesToExcel,
+  type HourlyImbalanceDetailRow,
+  type HourlyImbalanceStationFilter,
+  type ImbalancesDraftResult,
+} from './table2Imbalances';
 import { buildRdnVdrDraft, parseRdnVdrFile, type RdnVdrDraftResult, type RdnVdrMarket } from './table2RdnVdr';
 import {
+  deleteReportPeriod,
   loadReportState,
-  projectReportStateStorageKey,
   updatePeriodMarketPrices,
   updateStationModule,
   type ProjectReportState,
@@ -66,6 +74,7 @@ type PersistedAppState = {
   table2DataHubDraft?: DataHubDraftResult | null;
   table2MarketPricesDraft?: MarketPricesDraftResult | null;
   table2MmsDraft?: MmsDraftResult | null;
+  table2ImbalancesDraft?: ImbalancesDraftResult | null;
 };
 
 type ExportStatus = {
@@ -81,7 +90,8 @@ type ExportStatus = {
 
 type Table1ExportStatus = Table1BrowserExportResult & { outputPath?: string };
 
-type FcrSubTab = 'table0' | 'table1' | 'table2';
+type AppModule = 'fcr' | 'rdnVdr' | 'datahub' | 'imbalances' | 'finalReport';
+type FcrSubTab = 'table0' | 'table1';
 type Table2FileKey = 'oleksandriya-rdn' | 'oleksandriya-vdr' | 'znamyanka-rdn' | 'znamyanka-vdr';
 type DataHubFileKey = 'oleksandriya-datahub' | 'znamyanka-datahub';
 type MmsFileKey = 'oleksandriya-mms' | 'znamyanka-mms';
@@ -120,12 +130,12 @@ const mmsFileSlots: Array<{ key: MmsFileKey; stationId: StationId; stationName: 
   { key: 'znamyanka-mms', stationId: 'znamyanka', stationName: stationLabels.znamyanka, label: 'MMS Знаменка' },
 ];
 
-const modules = [
-  { title: 'РПЧ / FCR', description: 'Начисление и оплата', status: 'Активно', icon: Gauge, enabled: true },
-  { title: 'РДН / ВДР', description: 'Таблица_2', status: 'В работе', icon: LineChart, enabled: false },
-  { title: 'Небалансы', description: 'Отклонения и сверки', status: 'Скоро', icon: Zap, enabled: false },
-  { title: 'DataHub', description: 'Импорт данных', status: 'Скоро', icon: Database, enabled: false },
-  { title: 'Итоговый отчет', description: 'Сводный файл', status: 'Скоро', icon: FileText, enabled: false },
+const modules: Array<{ id: AppModule; title: string; description: string; status: string; icon: typeof Gauge; enabled: boolean }> = [
+  { id: 'fcr', title: 'FCR / RPC', description: 'Таблица_0 и Таблица_1', status: 'Активно', icon: Gauge, enabled: true },
+  { id: 'rdnVdr', title: 'RDN / VDR', description: 'Покупка и продажа', status: 'Активно', icon: LineChart, enabled: true },
+  { id: 'datahub', title: 'DataHub', description: 'Фактическая энергия', status: 'Активно', icon: Database, enabled: true },
+  { id: 'imbalances', title: 'Imbalances', description: 'Цены и MMS / KNESS', status: 'Активно', icon: Zap, enabled: true },
+  { id: 'finalReport', title: 'Final Report', description: 'Итоговая Таблица_2', status: 'Скоро', icon: FileText, enabled: true },
 ];
 
 const moneyFormatter = new Intl.NumberFormat('ru-RU', {
@@ -248,6 +258,7 @@ function readPersistedState(): PersistedAppState | null {
     table2DataHubDraft: parsedValue.table2DataHubDraft ?? null,
     table2MarketPricesDraft: parsedValue.table2MarketPricesDraft ?? null,
     table2MmsDraft: parsedValue.table2MmsDraft ?? null,
+    table2ImbalancesDraft: parsedValue.table2ImbalancesDraft ?? null,
   };
 }
 
@@ -276,9 +287,13 @@ export function App() {
   const [table1ExportStatus, setTable1ExportStatus] = useState<Table1ExportStatus | null>(null);
   const [table1ExportError, setTable1ExportError] = useState('');
   const [isTable1Exporting, setIsTable1Exporting] = useState(false);
+  const [activeModule, setActiveModule] = useState<AppModule>('fcr');
   const [activeFcrSubTab, setActiveFcrSubTab] = useState<FcrSubTab>('table0');
   const [showProjectMemoryDetails, setShowProjectMemoryDetails] = useState(false);
   const [showFcrDebugDetails, setShowFcrDebugDetails] = useState(false);
+  const [cleanupPeriod, setCleanupPeriod] = useState<ReportPeriod>((loadReportState()?.activePeriod ?? '2026-04') as ReportPeriod);
+  const [cleanupMessage, setCleanupMessage] = useState('');
+  const [showResetReportConfirm, setShowResetReportConfirm] = useState(false);
   const [table2Files, setTable2Files] = useState<Partial<Record<Table2FileKey, File>>>({});
   const [table2Draft, setTable2Draft] = useState<RdnVdrDraftResult | null>(persistedState?.table2RdnVdrDraft ?? null);
   const [table2Message, setTable2Message] = useState('');
@@ -299,6 +314,16 @@ export function App() {
   const [mmsMessage, setMmsMessage] = useState('');
   const [mmsError, setMmsError] = useState('');
   const [isMmsCalculating, setIsMmsCalculating] = useState(false);
+  const [imbalancesPeriod, setImbalancesPeriod] = useState<ReportPeriod>((loadReportState()?.activePeriod ?? '2026-04') as ReportPeriod);
+  const [imbalancesDraft, setImbalancesDraft] = useState<ImbalancesDraftResult | null>(persistedState?.table2ImbalancesDraft ?? null);
+  const [imbalancesMessage, setImbalancesMessage] = useState('');
+  const [imbalancesError, setImbalancesError] = useState('');
+  const [showHourlyImbalanceDetails, setShowHourlyImbalanceDetails] = useState(false);
+  const [hourlyImbalanceStationFilter, setHourlyImbalanceStationFilter] = useState<HourlyImbalanceStationFilter>('all');
+  const [hourlyImbalanceRows, setHourlyImbalanceRows] = useState<HourlyImbalanceDetailRow[]>([]);
+  const [hourlyImbalanceMessage, setHourlyImbalanceMessage] = useState('');
+  const [hourlyImbalanceError, setHourlyImbalanceError] = useState('');
+  const [isHourlyImbalanceExporting, setIsHourlyImbalanceExporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const normalizedRate = parseRate(eurRate);
@@ -451,12 +476,28 @@ export function App() {
     }),
   );
   const mmsRows = mmsDraft ? stationMemoryOrder.flatMap((stationId) => mmsDraft.stations?.[stationId] ?? []) : [];
+  const isImbalancesDraftSavedToProject = Boolean(
+    imbalancesDraft && stationMemoryOrder
+      .filter((stationId) => Boolean(imbalancesDraft.stations?.[stationId]))
+      .every((stationId) => {
+        const saved = projectMemoryState?.periods[imbalancesDraft.period]?.stations?.[stationId]?.imbalances?.result;
+        const stationDraft = imbalancesDraft.stations?.[stationId];
+        return saved
+          && stationDraft
+          && saved.negativeImbalanceVolumeMwh === stationDraft.negativeImbalanceVolumeMwh
+          && saved.positiveImbalanceVolumeMwh === stationDraft.positiveImbalanceVolumeMwh
+          && saved.netImbalanceResultUah === stationDraft.netImbalanceResultUah;
+      }),
+  );
+  const imbalanceRows = imbalancesDraft ? stationMemoryOrder.flatMap((stationId) => imbalancesDraft.stations?.[stationId] ?? []) : [];
+  const activeModuleMeta = modules.find((module) => module.id === activeModule) ?? modules[0];
+  const ActiveModuleIcon = activeModuleMeta.icon;
 
   useEffect(() => {
     const isEmptyDefaultState =
       station === 'Олександрійська БЕСС' && eurRate === '' && fileName === '' && !result && !paymentCalculation && !table2Draft;
 
-    if (isEmptyDefaultState && !dataHubDraft && !marketPricesDraft && !mmsDraft) {
+    if (isEmptyDefaultState && !dataHubDraft && !marketPricesDraft && !mmsDraft && !imbalancesDraft) {
       clearDraftState();
       return;
     }
@@ -471,10 +512,11 @@ export function App() {
       table2DataHubDraft: dataHubDraft,
       table2MarketPricesDraft: marketPricesDraft,
       table2MmsDraft: mmsDraft,
+      table2ImbalancesDraft: imbalancesDraft,
     };
 
     saveDraftState(stateToPersist);
-  }, [dataHubDraft, eurRate, fileName, marketPricesDraft, mmsDraft, paymentCalculation, result, station, table2Draft]);
+  }, [dataHubDraft, eurRate, fileName, imbalancesDraft, marketPricesDraft, mmsDraft, paymentCalculation, result, station, table2Draft]);
 
   const monthWarning =
     result && hasIncompleteFcrPeriod
@@ -514,10 +556,9 @@ export function App() {
     setFileName(file?.name ?? '');
   }
 
-  function handleClearData() {
+  function handleClearDraftData() {
     clearDraftState();
-    window.localStorage.removeItem(projectReportStateStorageKey);
-    setProjectMemoryState(null);
+    setProjectMemoryState(loadReportState());
     setStation('Олександрійська БЕСС');
     setEurRate('');
     setFileName('');
@@ -545,9 +586,36 @@ export function App() {
     setMmsDraft(null);
     setMmsMessage('');
     setMmsError('');
+    setImbalancesDraft(null);
+    setImbalancesMessage('');
+    setImbalancesError('');
+    setHourlyImbalanceRows([]);
+    setHourlyImbalanceMessage('');
+    setHourlyImbalanceError('');
+    setShowHourlyImbalanceDetails(false);
+    setCleanupMessage('Черновые данные очищены. Сохраненные месячные отчеты не изменены.');
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+  }
+
+  function handleResetMonthlyReport() {
+    if (!isReportPeriod(cleanupPeriod)) {
+      setCleanupMessage('Выберите период в формате YYYY-MM.');
+      setShowResetReportConfirm(false);
+      return;
+    }
+
+    const removedPeriod = cleanupPeriod;
+    const nextState = deleteReportPeriod(removedPeriod);
+    setProjectMemoryState(nextState);
+    const nextActivePeriod = nextState?.activePeriod ?? removedPeriod;
+    setCleanupPeriod(nextActivePeriod);
+    setTable1Period(nextActivePeriod);
+    setPaymentForPeriod(nextActivePeriod);
+    setImbalancesPeriod(nextActivePeriod);
+    setShowResetReportConfirm(false);
+    setCleanupMessage(`Месячный отчет за период ${removedPeriod} очищен.`);
   }
 
   function handleRefreshProjectMemory() {
@@ -797,7 +865,9 @@ export function App() {
         parsedData: {
           rdn: stationDraft.rdn,
           vdr: stationDraft.vdr,
+          hourlyRows: stationDraft.rdn.hourlyRows.concat(stationDraft.vdr.hourlyRows),
         },
+        hourlyRows: stationDraft.rdn.hourlyRows.concat(stationDraft.vdr.hourlyRows),
         result: {
           period: table2Draft.period,
           stationId,
@@ -890,7 +960,9 @@ export function App() {
           totalInKwh: stationDraft.totalInKwh,
           totalOutKwh: stationDraft.totalOutKwh,
           hourlyRowsRead: stationDraft.hourlyRowsRead,
+          hourlyRows: stationDraft.hourlyRows,
         },
+        hourlyRows: stationDraft.hourlyRows,
         result: {
           period: dataHubDraft.period,
           stationId,
@@ -1083,6 +1155,155 @@ export function App() {
     setMmsMessage('MMS сохранен в месячный отчет.');
   }
 
+  function handleCalculateImbalances() {
+    setImbalancesError('');
+    setImbalancesMessage('');
+    setHourlyImbalanceError('');
+    setHourlyImbalanceMessage('');
+    setHourlyImbalanceRows([]);
+
+    if (!isReportPeriod(imbalancesPeriod)) {
+      setImbalancesError('Период небалансов должен быть в формате YYYY-MM.');
+      return;
+    }
+
+    const latestState = loadReportState();
+    if (!latestState) {
+      setImbalancesError('В ProjectReportState нет сохраненных данных. Сначала сохраните RDN/VDR, DataHub и цены небалансов в месячный отчет.');
+      return;
+    }
+
+    try {
+      const draft = calculateImbalancesDraft(latestState, imbalancesPeriod);
+      setProjectMemoryState(latestState);
+      setImbalancesDraft(draft);
+      setImbalancesMessage('Черновик небалансов, не сохранен.');
+    } catch (error) {
+      setImbalancesDraft(null);
+      setImbalancesError(error instanceof Error ? error.message : 'Не удалось рассчитать небалансы.');
+    }
+  }
+
+  function handleSaveImbalancesToProject() {
+    if (!imbalancesDraft) {
+      setImbalancesError('Сначала рассчитайте небалансы.');
+      return;
+    }
+
+    for (const stationId of stationMemoryOrder) {
+      const stationDraft = imbalancesDraft.stations[stationId];
+      if (!stationDraft) {
+        continue;
+      }
+
+      updateStationModule(imbalancesDraft.period, stationId, 'imbalances', {
+        manualInputs: {
+          period: imbalancesDraft.period,
+          stationName: stationDraft.stationName,
+        },
+        parsedData: {
+          calculationMode: imbalancesDraft.calculationMode,
+          warnings: imbalancesDraft.warnings,
+        },
+        result: stationDraft,
+        validationErrors: (imbalancesDraft.warnings ?? []).map((warning) => ({
+          moduleName: 'imbalances',
+          message: warning,
+          createdAt: new Date().toISOString(),
+        })),
+      });
+    }
+
+    setProjectMemoryState(loadReportState());
+    setImbalancesError('');
+    setImbalancesMessage('Небалансы сохранены в месячный отчет.');
+  }
+
+  function handleToggleHourlyImbalanceDetails() {
+    setHourlyImbalanceError('');
+    setHourlyImbalanceMessage('');
+
+    const shouldShow = !showHourlyImbalanceDetails;
+    setShowHourlyImbalanceDetails(shouldShow);
+    if (!shouldShow) {
+      return;
+    }
+
+    const latestState = loadReportState();
+    if (!latestState) {
+      setHourlyImbalanceRows([]);
+      setHourlyImbalanceError('В ProjectReportState нет сохраненных данных для почасовой детализации.');
+      return;
+    }
+
+    try {
+      const rows = buildHourlyImbalanceDetailRows(latestState, imbalancesPeriod, hourlyImbalanceStationFilter);
+      setProjectMemoryState(latestState);
+      setHourlyImbalanceRows(rows);
+      setHourlyImbalanceMessage(`Почасовая детализация загружена: ${rows.length} строк.`);
+    } catch (error) {
+      setHourlyImbalanceRows([]);
+      setHourlyImbalanceError(error instanceof Error ? error.message : 'Не удалось построить почасовую детализацию.');
+    }
+  }
+
+  function handleHourlyImbalanceStationFilterChange(nextFilter: HourlyImbalanceStationFilter) {
+    setHourlyImbalanceStationFilter(nextFilter);
+    setHourlyImbalanceError('');
+    setHourlyImbalanceMessage('');
+
+    if (!showHourlyImbalanceDetails) {
+      return;
+    }
+
+    const latestState = loadReportState();
+    if (!latestState) {
+      setHourlyImbalanceRows([]);
+      setHourlyImbalanceError('В ProjectReportState нет сохраненных данных для почасовой детализации.');
+      return;
+    }
+
+    try {
+      const rows = buildHourlyImbalanceDetailRows(latestState, imbalancesPeriod, nextFilter);
+      setProjectMemoryState(latestState);
+      setHourlyImbalanceRows(rows);
+      setHourlyImbalanceMessage(`Почасовая детализация обновлена: ${rows.length} строк.`);
+    } catch (error) {
+      setHourlyImbalanceRows([]);
+      setHourlyImbalanceError(error instanceof Error ? error.message : 'Не удалось построить почасовую детализацию.');
+    }
+  }
+
+  async function handleExportHourlyImbalances() {
+    setHourlyImbalanceError('');
+    setHourlyImbalanceMessage('');
+
+    const latestState = loadReportState();
+    if (!latestState) {
+      setHourlyImbalanceError('В ProjectReportState нет сохраненных данных для экспорта.');
+      return;
+    }
+
+    setIsHourlyImbalanceExporting(true);
+    try {
+      const rows = hourlyImbalanceRows.length > 0
+        ? hourlyImbalanceRows
+        : buildHourlyImbalanceDetailRows(latestState, imbalancesPeriod, hourlyImbalanceStationFilter);
+      const exportResult = await exportHourlyImbalancesToExcel({
+        rows,
+        period: imbalancesPeriod,
+        stationFilter: hourlyImbalanceStationFilter,
+      });
+      setHourlyImbalanceRows(rows);
+      setShowHourlyImbalanceDetails(true);
+      setHourlyImbalanceMessage(`Excel-файл создан: ${exportResult.fileName}, строк: ${exportResult.rowsCount}.`);
+    } catch (error) {
+      setHourlyImbalanceError(error instanceof Error ? error.message : 'Не удалось экспортировать почасовую детализацию.');
+    } finally {
+      setIsHourlyImbalanceExporting(false);
+    }
+  }
+
   async function handleCalculate() {
     if (!hasValidRate) {
       setErrorMessage('Укажите корректный средний курс EUR/UAH за месяц.');
@@ -1233,12 +1454,16 @@ export function App() {
                     const rdnVdrModule = periodState?.stations?.[stationId]?.rdnVdr;
                     const dataHubModule = periodState?.stations?.[stationId]?.datahub;
                     const mmsModule = periodState?.stations?.[stationId]?.mms;
+                    const imbalancesModule = periodState?.stations?.[stationId]?.imbalances;
                     const table0Result = table0Fcr?.result;
                     const hasTable0 = Boolean(table0Result);
                     const hasTable1 = Boolean(table1PaymentsModule?.result);
                     const hasTable2 = Boolean(rdnVdrModule?.result);
                     const hasDataHub = Boolean(dataHubModule?.result);
                     const hasMms = Boolean(mmsModule?.result);
+                    const hasImbalances = Boolean(imbalancesModule?.result);
+                    const rdnVdrHourlyRowsCount = rdnVdrModule?.hourlyRows?.length ?? rdnVdrModule?.parsedData?.hourlyRows?.length ?? 0;
+                    const dataHubHourlyRowsCount = dataHubModule?.hourlyRows?.length ?? dataHubModule?.parsedData?.hourlyRows?.length ?? 0;
 
                     return (
                       <div className={hasTable0 ? 'memory-station memory-station-saved' : 'memory-station'} key={stationId}>
@@ -1250,6 +1475,9 @@ export function App() {
                             <span>{hasTable2 ? 'РДН/ВДР ✅' : 'РДН/ВДР нет данных'}</span>
                             <span>{hasDataHub ? 'DataHub ✅' : 'DataHub нет данных'}</span>
                             <span>{hasMms ? 'MMS ✅' : 'MMS нет данных'}</span>
+                            <span>{hasImbalances ? 'Небалансы ✅' : 'Небалансы нет данных'}</span>
+                            {hasTable2 && <span>RDN/VDR hourly rows: {rdnVdrHourlyRowsCount}</span>}
+                            {hasDataHub && <span>DataHub hourly rows: {dataHubHourlyRowsCount}</span>}
                           </div>
                         </div>
                         {showProjectMemoryDetails && table0Result ? (
@@ -1308,9 +1536,10 @@ export function App() {
             const Icon = module.icon;
             return (
               <button
-                className={module.enabled ? 'module-item module-item-active' : 'module-item'}
+                className={activeModule === module.id ? 'module-item module-item-active' : 'module-item'}
                 disabled={!module.enabled}
                 key={module.title}
+                onClick={() => setActiveModule(module.id)}
                 type="button"
                 title={module.enabled ? module.title : `${module.title}: будет добавлено позже`}
               >
@@ -1334,16 +1563,46 @@ export function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Первый модуль</p>
-            <h2>РПЧ / FCR</h2>
+            <p className="eyebrow">{activeModule === 'fcr' ? 'Модуль начисления' : 'Рабочий раздел'}</p>
+            <h2>{activeModuleMeta.title}</h2>
           </div>
           <div className="topbar-status">
-            <Plug size={16} />
-            <span>Чтение Excel и расчет оплаты РПЧ подключены для первого модуля</span>
+            <ActiveModuleIcon size={16} />
+            <span>{activeModuleMeta.description}</span>
           </div>
         </header>
 
-        <div className="subtab-bar" role="tablist" aria-label="РПЧ / FCR">
+        <section className="cleanup-panel" aria-labelledby="cleanup-title">
+          <div>
+            <p className="eyebrow">Очистка данных</p>
+            <h3 id="cleanup-title">Черновики и месячные отчеты</h3>
+            <p>Безопасная очистка убирает только текущие расчеты с экрана. Сброс месячного отчета удаляет сохраненные данные только за выбранный период.</p>
+          </div>
+          <div className="cleanup-controls">
+            <label>
+              <span>Период</span>
+              <input
+                type="month"
+                value={cleanupPeriod}
+                onChange={(event) => {
+                  setCleanupPeriod(event.target.value as ReportPeriod);
+                  setCleanupMessage('');
+                }}
+              />
+            </label>
+            <button className="clear-button" type="button" onClick={handleClearDraftData}>
+              <Trash2 size={17} />
+              Очистить черновые данные
+            </button>
+            <button className="danger-button" type="button" onClick={() => setShowResetReportConfirm(true)}>
+              Сбросить месячный отчет
+            </button>
+          </div>
+          {cleanupMessage && <p className="cleanup-message">{cleanupMessage}</p>}
+        </section>
+
+        {activeModule === 'fcr' && (
+        <div className="subtab-bar" role="tablist" aria-label="FCR / RPC">
           <button
             className={activeFcrSubTab === 'table0' ? 'subtab-button subtab-button-active' : 'subtab-button'}
             type="button"
@@ -1362,18 +1621,10 @@ export function App() {
           >
             Таблица_1 — оплата Укренерго
           </button>
-          <button
-            className={activeFcrSubTab === 'table2' ? 'subtab-button subtab-button-active' : 'subtab-button'}
-            type="button"
-            role="tab"
-            aria-selected={activeFcrSubTab === 'table2'}
-            onClick={() => setActiveFcrSubTab('table2')}
-          >
-            Таблица_2 — РДН/ВДР
-          </button>
         </div>
+        )}
 
-        {activeFcrSubTab === 'table0' && (
+        {activeModule === 'fcr' && activeFcrSubTab === 'table0' && (
         <div className="content-grid">
           <section className="form-panel" aria-labelledby="fcr-form-title">
               <div className="section-heading">
@@ -1440,9 +1691,9 @@ export function App() {
                   <Calculator size={19} />
                   {isCalculating ? 'Чтение файла...' : 'Рассчитать'}
                 </button>
-                <button className="clear-button" type="button" onClick={handleClearData}>
+                <button className="clear-button" type="button" onClick={handleClearDraftData}>
                   <Trash2 size={18} />
-                  Очистить данные
+                  Очистить черновые данные
                 </button>
               </div>
           </section>
@@ -1476,7 +1727,7 @@ export function App() {
         )}
 
         <div className="results-stack">
-            {activeFcrSubTab === 'table0' && stationFileMismatchWarning && (
+            {activeModule === 'fcr' && activeFcrSubTab === 'table0' && stationFileMismatchWarning && (
               <section className="message-panel message-panel-warning" aria-live="polite">
                 <AlertTriangle size={20} />
                 <div>
@@ -1486,9 +1737,9 @@ export function App() {
               </section>
             )}
 
-            {activeFcrSubTab === 'table0' && projectMemoryPanel}
+            {activeModule === 'fcr' && activeFcrSubTab === 'table0' && projectMemoryPanel}
 
-            {activeFcrSubTab === 'table1' && (
+            {activeModule === 'fcr' && activeFcrSubTab === 'table1' && (
             <section className="table1-panel" aria-labelledby="table1-title">
               <div className="section-heading result-heading">
                 <FileText size={22} />
@@ -1666,7 +1917,7 @@ export function App() {
             </section>
             )}
 
-            {activeFcrSubTab === 'table2' && (
+            {activeModule === 'rdnVdr' && (
             <section className="table1-panel table2-panel" aria-labelledby="table2-title">
               <div className="section-heading result-heading">
                 <LineChart size={22} />
@@ -1780,7 +2031,12 @@ export function App() {
                 </>
               )}
 
-              <div className="table2-subsection" aria-labelledby="datahub-title">
+            </section>
+            )}
+
+            {activeModule === 'datahub' && (
+            <section className="table1-panel table2-panel" aria-labelledby="datahub-title">
+              <div className="table2-subsection table2-subsection-first" aria-labelledby="datahub-title">
                 <div className="section-heading result-heading">
                   <Database size={22} />
                   <div>
@@ -1878,7 +2134,12 @@ export function App() {
                 )}
               </div>
 
-              <div className="table2-subsection" aria-labelledby="market-prices-title">
+            </section>
+            )}
+
+            {activeModule === 'imbalances' && (
+            <section className="table1-panel table2-panel" aria-labelledby="market-prices-title">
+              <div className="table2-subsection table2-subsection-first" aria-labelledby="market-prices-title">
                 <div className="section-heading result-heading">
                   <FileSpreadsheet size={22} />
                   <div>
@@ -2064,13 +2325,237 @@ export function App() {
                   </>
                 )}
               </div>
+
+              <div className="table2-subsection" aria-labelledby="imbalances-title">
+                <div className="section-heading result-heading">
+                  <Zap size={22} />
+                  <div>
+                    <p className="eyebrow">Calculated imbalances</p>
+                    <h3 id="imbalances-title">Расчет небалансов по сохраненным данным</h3>
+                    <p>Расчет использует финальную память проекта: RDN/VDR, DataHub и цены Укренерго. MMS/KNESS показывается только как контрольный слой.</p>
+                  </div>
+                </div>
+
+                <div className="table1-controls table2-imbalance-controls">
+                  <label>
+                    <span>Период расчета</span>
+                    <input
+                      type="month"
+                      value={imbalancesPeriod}
+                      onChange={(event) => setImbalancesPeriod(event.target.value as ReportPeriod)}
+                    />
+                  </label>
+                </div>
+
+                <div className="table2-actions">
+                  <button className="primary-button" type="button" onClick={handleCalculateImbalances}>
+                    <Calculator size={18} />
+                    Рассчитать небалансы
+                  </button>
+                  <button className="clear-button" disabled={!imbalancesDraft} type="button" onClick={handleSaveImbalancesToProject}>
+                    Сохранить небалансы в месячный отчет
+                  </button>
+                </div>
+
+                {imbalancesError && <p className="table1-message table-message-error">{imbalancesError}</p>}
+                {imbalancesMessage && <p className="table1-message">{imbalancesMessage}</p>}
+
+                <div className="hourly-detail-toolbar">
+                  <label>
+                    <span>Станция для детализации</span>
+                    <select
+                      value={hourlyImbalanceStationFilter}
+                      onChange={(event) => handleHourlyImbalanceStationFilterChange(event.target.value as HourlyImbalanceStationFilter)}
+                    >
+                      <option value="all">Все станции</option>
+                      <option value="oleksandriya">Olexandriya</option>
+                      <option value="znamyanka">Znamenka</option>
+                    </select>
+                  </label>
+                  <button className="clear-button" type="button" onClick={handleToggleHourlyImbalanceDetails}>
+                    {showHourlyImbalanceDetails ? 'Скрыть почасовую детализацию' : 'Показать почасовую детализацию'}
+                  </button>
+                  <button className="export-button" disabled={isHourlyImbalanceExporting} type="button" onClick={handleExportHourlyImbalances}>
+                    <Download size={18} />
+                    {isHourlyImbalanceExporting ? 'Экспорт...' : 'Export hourly imbalances to Excel'}
+                  </button>
+                </div>
+
+                {hourlyImbalanceError && <p className="table1-message table-message-error">{hourlyImbalanceError}</p>}
+                {hourlyImbalanceMessage && <p className="table1-message">{hourlyImbalanceMessage}</p>}
+
+                {showHourlyImbalanceDetails && hourlyImbalanceRows.length > 0 && (
+                  <div className="payment-table-wrap table2-results-wrap">
+                    <table className="payment-table table2-results-table hourly-imbalances-table">
+                      <thead>
+                        <tr>
+                          <th>Станция</th>
+                          <th>date</th>
+                          <th>hour</th>
+                          <th>DataHub IN, MWh</th>
+                          <th>DataHub OUT, MWh</th>
+                          <th>RDN/VDR purchase volume, MWh</th>
+                          <th>RDN/VDR sale volume, MWh</th>
+                          <th>negative imbalance volume, MWh</th>
+                          <th>positive imbalance volume, MWh</th>
+                          <th>RDN price</th>
+                          <th>negative imbalance price</th>
+                          <th>positive imbalance price</th>
+                          <th>negative price used</th>
+                          <th>positive price used</th>
+                          <th>negative cost</th>
+                          <th>positive cost</th>
+                          <th>net result</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {hourlyImbalanceRows.map((row) => (
+                          <tr key={`${row.stationId}-${row.date}-${row.hour}`}>
+                            <td>{row.stationName}</td>
+                            <td>{row.date}</td>
+                            <td>{row.hour}</td>
+                            <td>{numberFormatter.format(row.dataHubInMwh)}</td>
+                            <td>{numberFormatter.format(row.dataHubOutMwh)}</td>
+                            <td>{numberFormatter.format(row.purchaseVolumeMwh)}</td>
+                            <td>{numberFormatter.format(row.saleVolumeMwh)}</td>
+                            <td>{numberFormatter.format(row.negativeImbalanceVolumeMwh)}</td>
+                            <td>{numberFormatter.format(row.positiveImbalanceVolumeMwh)}</td>
+                            <td>{moneyFormatter.format(row.rdnPriceUah)}</td>
+                            <td>{moneyFormatter.format(row.negativeImbalancePriceUah)}</td>
+                            <td>{moneyFormatter.format(row.positiveImbalancePriceUah)}</td>
+                            <td>{moneyFormatter.format(row.negativePriceUsedUah)}</td>
+                            <td>{moneyFormatter.format(row.positivePriceUsedUah)}</td>
+                            <td>{moneyFormatter.format(row.negativeCostUah)}</td>
+                            <td>{moneyFormatter.format(row.positiveCostUah)}</td>
+                            <td>{moneyFormatter.format(row.netResultUah)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {imbalancesDraft && (
+                  <>
+                    <div className={isImbalancesDraftSavedToProject ? 'draft-status draft-status-saved' : 'draft-status draft-status-unsaved'}>
+                      <div>
+                        <span>{isImbalancesDraftSavedToProject ? 'Финальная память' : 'Черновик'}</span>
+                        <strong>{isImbalancesDraftSavedToProject ? 'Небалансы сохранены в месячный отчет' : 'Черновик небалансов, не сохранен'}</strong>
+                        <p>
+                          Период: {imbalancesDraft.period} · Режим: {imbalancesDraft.calculationMode === 'hourly' ? 'Hourly calculation' : 'Monthly approximate calculation'} ·
+                          Часов использовано: {imbalancesDraft.hourlyRowsUsed} · Missing hours: {imbalancesDraft.missingHours}
+                        </p>
+                      </div>
+                    </div>
+
+                    {(imbalancesDraft.warnings ?? []).length > 0 && (
+                      <div className="table2-warning-list">
+                        {(imbalancesDraft.warnings ?? []).map((warning) => (
+                          <p key={warning}>{warning}</p>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="payment-table-wrap table2-results-wrap">
+                      <table className="payment-table table2-results-table table2-imbalances-table">
+                        <thead>
+                          <tr>
+                            <th>Станция</th>
+                            <th>Режим</th>
+                            <th>Hourly rows used</th>
+                            <th>Missing hours</th>
+                            <th>Негативный небаланс, МВт⋅ч</th>
+                            <th>Стоимость негативного, грн</th>
+                            <th>Средняя цена негативного, грн</th>
+                            <th>Позитивный небаланс, МВт⋅ч</th>
+                            <th>Стоимость позитивного, грн</th>
+                            <th>Средняя цена позитивного, грн</th>
+                            <th>Net result, грн</th>
+                            <th>KNESS → станция, МВт⋅ч</th>
+                            <th>Станция → KNESS, МВт⋅ч</th>
+                            <th>MMS balance, МВт⋅ч</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {imbalanceRows.map((row) => (
+                            <tr key={row.stationId}>
+                              <td>{row.stationName}</td>
+                              <td>{row.calculationMode === 'hourly' ? 'Hourly' : 'Monthly approximate'}</td>
+                              <td>{row.hourlyRowsUsed}</td>
+                              <td>{row.missingHours}</td>
+                              <td>{numberFormatter.format(row.negativeImbalanceVolumeMwh)}</td>
+                              <td>{moneyFormatter.format(row.negativeImbalanceCostUah)}</td>
+                              <td>{moneyFormatter.format(row.averageNegativeImbalancePriceUsedUah)}</td>
+                              <td>{numberFormatter.format(row.positiveImbalanceVolumeMwh)}</td>
+                              <td>{moneyFormatter.format(row.positiveImbalanceCostUah)}</td>
+                              <td>{moneyFormatter.format(row.averagePositiveImbalancePriceUsedUah)}</td>
+                              <td>{moneyFormatter.format(row.netImbalanceResultUah)}</td>
+                              <td>{numberFormatter.format(row.mmsKnessToStationMwh)}</td>
+                              <td>{numberFormatter.format(row.mmsStationToKnessMwh)}</td>
+                              <td>{numberFormatter.format(row.mmsBalanceMwh)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="table2-summary-grid table2-summary-grid-compact">
+                      <div>
+                        <span>Calculation mode</span>
+                        <strong>{imbalancesDraft.calculationMode === 'hourly' ? 'Hourly calculation' : 'Monthly approximate calculation'}</strong>
+                      </div>
+                      <div>
+                        <span>Hourly rows used</span>
+                        <strong>{imbalancesDraft.summary.hourlyRowsUsed}</strong>
+                      </div>
+                      <div>
+                        <span>Missing hours</span>
+                        <strong>{imbalancesDraft.summary.missingHours}</strong>
+                      </div>
+                      <div>
+                        <span>Негативный объем</span>
+                        <strong>{numberFormatter.format(imbalancesDraft.summary.negativeImbalanceVolumeMwh)} МВт⋅ч</strong>
+                      </div>
+                      <div>
+                        <span>Негативная стоимость</span>
+                        <strong>{moneyFormatter.format(imbalancesDraft.summary.negativeImbalanceCostUah)} грн</strong>
+                      </div>
+                      <div>
+                        <span>Позитивный объем</span>
+                        <strong>{numberFormatter.format(imbalancesDraft.summary.positiveImbalanceVolumeMwh)} МВт⋅ч</strong>
+                      </div>
+                      <div>
+                        <span>Позитивная стоимость</span>
+                        <strong>{moneyFormatter.format(imbalancesDraft.summary.positiveImbalanceCostUah)} грн</strong>
+                      </div>
+                      <div>
+                        <span>Общий результат</span>
+                        <strong>{moneyFormatter.format(imbalancesDraft.summary.netImbalanceResultUah)} грн</strong>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </section>
             )}
 
-            {activeFcrSubTab === 'table1' && projectMemoryPanel}
-            {activeFcrSubTab === 'table2' && projectMemoryPanel}
+            {activeModule === 'finalReport' && (
+              <section className="table1-panel table2-panel" aria-labelledby="final-report-title">
+                <div className="section-heading result-heading">
+                  <FileText size={22} />
+                  <div>
+                    <p className="eyebrow">Final Report</p>
+                    <h3 id="final-report-title">Итоговый отчет</h3>
+                    <p>Final Table_2 report will be generated here after RDN/VDR, DataHub, prices, MMS and imbalance calculations are saved.</p>
+                  </div>
+                </div>
+              </section>
+            )}
 
-            {activeFcrSubTab === 'table0' && errorMessage && (
+            {activeModule === 'fcr' && activeFcrSubTab === 'table1' && projectMemoryPanel}
+            {activeModule !== 'fcr' && activeModule !== 'finalReport' && projectMemoryPanel}
+
+            {activeModule === 'fcr' && activeFcrSubTab === 'table0' && errorMessage && (
               <section className="message-panel message-panel-error" aria-live="polite">
                 <AlertCircle size={20} />
                 <div>
@@ -2080,7 +2565,7 @@ export function App() {
               </section>
             )}
 
-            {activeFcrSubTab === 'table0' && monthWarning && (
+            {activeModule === 'fcr' && activeFcrSubTab === 'table0' && monthWarning && (
               <section className="message-panel message-panel-warning" aria-live="polite">
                 <AlertTriangle size={20} />
                 <div>
@@ -2090,7 +2575,7 @@ export function App() {
               </section>
             )}
 
-            {activeFcrSubTab === 'table0' && result && (
+            {activeModule === 'fcr' && activeFcrSubTab === 'table0' && result && (
               <section className="result-panel" aria-labelledby="fcr-result-title">
                 <div className="section-heading result-heading">
                   <BarChart3 size={22} />
@@ -2173,7 +2658,7 @@ export function App() {
               </section>
             )}
 
-            {activeFcrSubTab === 'table0' && paymentCalculation && (
+            {activeModule === 'fcr' && activeFcrSubTab === 'table0' && paymentCalculation && (
               <section className="payment-panel" aria-labelledby="payment-title">
                 <div className="section-heading result-heading">
                   <Calculator size={22} />
@@ -2279,6 +2764,37 @@ export function App() {
             )}
         </div>
       </section>
+      {showResetReportConfirm && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="reset-report-title">
+            <h3 id="reset-report-title">Сбросить месячный отчет</h3>
+            <p>
+              Вы уверены, что хотите сбросить месячный отчет за выбранный период?
+            </p>
+            <p>
+              Это действие удалит все сохраненные данные за этот месяц:
+            </p>
+            <ul>
+              <li>FCR/RPC</li>
+              <li>оплата Укренерго</li>
+              <li>RDN/VDR</li>
+              <li>DataHub</li>
+              <li>Imbalances</li>
+              <li>MMS/KNESS</li>
+              <li>будущие данные Final Report</li>
+            </ul>
+            <p><strong>Это действие нельзя отменить.</strong></p>
+            <div className="confirm-actions">
+              <button className="clear-button" type="button" onClick={() => setShowResetReportConfirm(false)}>
+                Отмена
+              </button>
+              <button className="danger-button" type="button" onClick={handleResetMonthlyReport}>
+                Да, сбросить отчет
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
