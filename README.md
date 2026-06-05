@@ -1,24 +1,25 @@
-# UZE Report Automation
+# BESS Report Automation
 
-Open-source desktop tool for automating monthly reporting and analytics for battery energy storage systems (BESS) in Ukraine’s electricity market.
+Open-source desktop tool for automating monthly reporting and analytics for Battery Energy Storage Systems (BESS) in Ukraine’s electricity market.
 
-The project helps reduce manual Excel work when preparing reports for energy storage assets. It focuses on processing fragmented market and operational data sources and turning them into structured monthly reports.
+The project helps reduce manual Excel work when preparing monthly reports for battery energy storage assets. It focuses on processing fragmented market and operational data sources and turning them into structured monthly reports.
 
 ## What the project does
 
-UZE Report Automation is designed to support workflows such as:
+BESS Report Automation is designed to support workflows such as:
 
-- FCR / RPC availability calculation
-- RDN / VDR electricity market trade processing
-- DataHub metering data import
-- MMS / balancing group data processing
+- FCR / frequency containment reserve availability calculation
+- Day-ahead and intraday electricity market trade processing
+- Metering data import
+- Balancing group data processing
 - Balancing energy and imbalance analytics
 - Monthly Excel report preparation
 - Investor and management reporting support
 
 ## Why it matters
 
-Battery energy storage reporting in emerging electricity markets is often highly manual, fragmented and difficult to audit.  
+Battery energy storage reporting in emerging electricity markets is often highly manual, fragmented and difficult to audit.
+
 Operators and analysts may need to combine many different files, market exports, Excel templates and reconciliation documents every month.
 
 This project aims to make that workflow more transparent, reproducible and easier to maintain.
@@ -30,9 +31,9 @@ The project is in active development.
 Current focus:
 
 - local desktop application
-- monthly report automation
+- monthly BESS report automation
 - Excel import and export
-- station-level data processing
+- asset-level data processing
 - validation and reconciliation logic
 - cleaner modular user interface
 
